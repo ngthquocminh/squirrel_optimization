@@ -165,7 +165,7 @@ def setup_variables(model: Model):
         keys1=model.members.keys(),
         keys2=model.objecttime_ids.keys(),
         keys3=range(0, MAX_SHIFT_PER_OBJECTTIME),
-        name="MemberAssignment",
+        name="ShiftAssignment",
     )
     # print(model.shift_assignment_vars, "\n")
 
