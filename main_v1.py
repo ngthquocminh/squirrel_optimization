@@ -379,12 +379,12 @@ def setup_constraints(model: Model):
             name="ShiftAssignment",
         )
         # else
-        # model.add_equivalence(
-        #     model.shift_assignment_vars[varKey],
-        #     shiftEnd_var - shiftStart_var >= MIN_SHIFT_LENGTH,
-        #     true_value=1,
-        #     name="ShiftAssignment",
-        # )
+        model.add_equivalence(
+            model.shift_assignment_vars[varKey],
+            shiftEnd_var - shiftStart_var >= MIN_SHIFT_LENGTH,
+            true_value=1,
+            name="ShiftAssignment",
+        )
 
         # for brk in range(0, MAX_BREAK_PER_SHIFT):
         #     brk_key = (ctactId, objtId, "{0}_br{1}".format(shft, brk))
