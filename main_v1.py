@@ -6,7 +6,6 @@ from docplex.mp.model import Model
 from docplex.util.environment import get_environment
 from functools import reduce
 import numpy as np
-from pandas.core.algorithms import mode
 
 # ----------------------------------------------------------------------------
 # Initialize the problem data
@@ -55,8 +54,8 @@ TRange = namedtuple("TRange", ["From", "To"])
 file_name = "Squirrel_Optimization.xlsx"
 excel_data_file = pd.ExcelFile(file_name)
 
-MAX_SHIFT_PER_OBJECTTIME = 3
-MAX_BREAK_PER_SHIFT = 4
+MAX_SHIFT_PER_OBJECTTIME = 2
+MAX_BREAK_PER_SHIFT = 3
 DEFAULT_BREAK_LENGTH = 0.5 * 60
 MIN_SHIFT_LENGTH = 4 * 60
 NUM_OBJECTTIME_PER_DAY = 12
@@ -141,7 +140,7 @@ def load_data(model, excel, verbose):
     model.objecttimes = VACANCY_OBJECTTIME
     model.worksite_refs = MEM_WORKSITE_REFERENCE
     model.shift_refs = MEM_SHIFT_REFERENCE
-    model.member_measurement = MEM_MEASUREMENT[:15]
+    model.member_measurement = MEM_MEASUREMENT[:]
     model.shift_constraints = SHIFT_CONSTRAINTS
     model.vacancy_detail = VACANCY_DETAIL
 
@@ -150,7 +149,7 @@ def setup_data(model: Model):
     model.members = {m.ContactID: m for m in model.member_measurement}
     lst = list(set(model.objecttimes))
     lst.sort(key=lambda x: x.DateFrom)
-    model.objecttime_ids = {i: o for i, o in enumerate(lst)}
+    model.objecttime_ids = {i: o for i, o in enumerate(lst[:3])}
 
 
 def setup_variables(model: Model):
@@ -176,6 +175,7 @@ def setup_variables(model: Model):
         keys2=model.objecttime_ids.keys(),
         keys3=range(0, MAX_SHIFT_PER_OBJECTTIME),
         lb=0,
+        ub=20000, # Limit for 10 days
         name="ShiftStart",
     )
 
@@ -186,6 +186,7 @@ def setup_variables(model: Model):
         keys2=model.objecttime_ids.keys(),
         keys3=range(0, MAX_SHIFT_PER_OBJECTTIME),
         lb=0,
+        ub=20000, # Limit for 10 days
         name="ShiftEnd",
     )
 
@@ -199,6 +200,7 @@ def setup_variables(model: Model):
             for j in range(0, MAX_BREAK_PER_SHIFT)
         ],
         lb=0,
+        ub=60*24*10, # Limit for 10 days
         name="BreakStart",
     )
 
@@ -213,6 +215,7 @@ def setup_variables(model: Model):
             for j in range(0, MAX_BREAK_PER_SHIFT)
         ],
         lb=0,
+        ub=60*15,  #maximum break length (in minute)
         name="BreakDuration",
     )
 
@@ -337,12 +340,12 @@ def setup_constraints(model: Model):
     #         for objtId in model.objecttime_ids.keys()
     #         for shft in range(0, MAX_SHIFT_PER_OBJECTTIME)
     #     )
-    #     -model.sum(
-    #         model.break_duration_vars[(ctactId, objtId, "{0}_br{1}".format(shft, brk))]
-    #         for objtId in model.objecttime_ids.keys()
-    #         for shft in range(0, MAX_SHIFT_PER_OBJECTTIME)
-    #         for brk in range(0, MAX_BREAK_PER_SHIFT)
-    #     )
+    #     # -model.sum(
+    #     #     model.break_duration_vars[(ctactId, objtId, "{0}_br{1}".format(shft, brk))]
+    #     #     for objtId in model.objecttime_ids.keys()
+    #     #     for shft in range(0, MAX_SHIFT_PER_OBJECTTIME)
+    #     #     for brk in range(0, MAX_BREAK_PER_SHIFT)
+    #     # )
     #     model.add_constraint(
     #         model.le_constraint(
     #             model.work_time_var[ctactId],
@@ -351,6 +354,7 @@ def setup_constraints(model: Model):
     #         )
     #     )
 
+    # Normal shift constraints
     for ctactId, objtId, shft in model.shift_assignment_vars.keys():
         objt = model.objecttime_ids[objtId]
         varKey = (ctactId, objtId, shft)
@@ -384,16 +388,30 @@ def setup_constraints(model: Model):
 
         for brk in range(0, MAX_BREAK_PER_SHIFT):
             brk_key = (ctactId, objtId, "{0}_br{1}".format(shft, brk))
-            model.add_constraint(model.break_start_vars[brk_key] >= shiftStart_var)
+            model.add_constraint(
+                model.break_start_vars[brk_key] >= shiftStart_var,
+                "Break.Start>=Shift.Start",
+            )
             model.add_constraint(
                 model.break_duration_vars[brk_key] + model.break_start_vars[brk_key]
-                <= shiftEnd_var
+                <= shiftEnd_var,
+                "Break.Start+Duration<=Shift.End",
             )
+
+            model.add_constraint(
+                model.if_then(
+                    model.break_duration_vars[brk_key] >= 1,  # > 0
+                    model.break_duration_vars[brk_key] >= DEFAULT_BREAK_LENGTH,
+                ),
+                "Break.Duration==0_Or_>=MIN",
+            )
+
             if brk < MAX_BREAK_PER_SHIFT - 1:
                 next_brk_key = (ctactId, objtId, "{0}_br{1}".format(shft, brk + 1))
                 model.add_constraint(
                     model.break_duration_vars[brk_key] + model.break_start_vars[brk_key]
-                    <= model.break_start_vars[next_brk_key]
+                    <= model.break_start_vars[next_brk_key],
+                    "Break.Start+Duration<=NextBreak.Start",
                 )
         # timeAvailability = lookup(
         #     model.availabilities,
@@ -425,23 +443,28 @@ def setup_constraints(model: Model):
 
     ## CONSTRAINT: MINIMUM BREAK BETWEEN SHIFTS = 1
     # * also set each shift on a day cannot must not be overlap
-    # for ctactId in model.members.keys():
-    #     for objtId in model.objecttime_ids.keys():
-    #         for shft in range(1, MAX_SHIFT_PER_OBJECTTIME):
-    #             keyCurrentShift = (ctactId, objtId, shft - 1)
-    #             keyNextShift = (ctactId, objtId, shft)
-    #             thisShift_end = model.shift_end_vars[keyCurrentShift]
-    #             nextShift_start = model.shift_start_vars[keyNextShift]
-    #             # There is atleast a 30-min break between 2 consecutive-shift
-    #             model.add_constraint(
-    #                 model.if_then(
-    #                     model.shift_assignment_vars[keyCurrentShift]
-    #                     + model.shift_assignment_vars[keyNextShift]
-    #                     == 2,  # if both shift are assigned then there is atleast one 30-min break
-    #                     nextShift_start - thisShift_end >= DEFAULT_BREAK_LENGTH * 1,
-    #                 ),
-    #                 "TwoAdjacentShift",
-    #             )
+    for ctactId in model.members.keys():
+        for objtId in model.objecttime_ids.keys():
+            for shft in range(1, MAX_SHIFT_PER_OBJECTTIME):
+                keyCurrentShift = (ctactId, objtId, shft - 1)
+                keyNextShift = (ctactId, objtId, shft)
+                thisShift_end = model.shift_end_vars[keyCurrentShift]
+                nextShift_start = model.shift_start_vars[keyNextShift]
+
+                # By default, shift1.end <= shift2.start
+                model.add_constraint(
+                    thisShift_end <= nextShift_start,
+                    "Shift{0}.End<=Shift{1}.Start".format(shft - 1, shft),
+                )
+
+                # There is atleast a 30-min break between 2 assigned consecutive-shift
+                model.add_constraint(
+                    model.indicator_constraint(
+                        model.shift_assignment_vars[keyCurrentShift],
+                        nextShift_start - thisShift_end >= DEFAULT_BREAK_LENGTH * 1,
+                    ),
+                    "TwoAdjacentShift",
+                )
 
     # CONSTRAINT: MAKE SURE THERE ARE ALWAYS 'Minimum People Working' AT ANY MOMENT
     minPeopleWorking = model.shift_constraints.MinPeopleWorking
@@ -451,11 +474,16 @@ def setup_constraints(model: Model):
             int(objt.DateFrom), int(objt.DateTo) + 1, 30
         ):  # include objt.DateTo
             # this var_list is to check if each member is working or not at this moment
-            mem_isworking_vars = []
+            check_mem_isworking_vars = []
+            check_object_times_vars = []
             for contactId in model.members.keys():
                 working_checker = []
+                shift_checker = []
                 is_working_var = model.binary_var(
                     "working_{0}_{1}".format(moment, contactId)
+                )
+                is_shift_var = model.binary_var(
+                    "shift_{0}_{1}".format(moment, contactId)
                 )
                 # check with each shift of this objecttime
                 for shft in range(0, MAX_SHIFT_PER_OBJECTTIME):
@@ -466,6 +494,7 @@ def setup_constraints(model: Model):
 
                     checkStart_var = model.binary_var()
                     checkEnd_var = model.binary_var()
+                    check_shift = model.binary_var()
 
                     # moment must be insite shift-range
                     model.add_constraint(
@@ -476,14 +505,20 @@ def setup_constraints(model: Model):
                         model.equivalence_constraint(checkEnd_var, moment <= end)
                     )
 
-                    arr = [checkStart_var, checkEnd_var]
+                    model.add_constraint(
+                        check_shift
+                        == model.logical_and(
+                            checkEnd_var, checkStart_var
+                        )  # AND to check inside shift
+                    )
+                    arr = [check_shift]
 
                     # check with breaks of this shift
                     for brk in range(0, MAX_BREAK_PER_SHIFT):
                         _key = (contactId, objtId, "{0}_br{1}".format(shft, brk))
                         _brk_start = model.break_start_vars[_key]
                         _duration = model.break_duration_vars[_key]
-
+                        _check_break = model.binary_var()
                         _checkStart_var = model.binary_var()
                         _checkEnd_var = model.binary_var()
 
@@ -493,24 +528,47 @@ def setup_constraints(model: Model):
                         model.add_equivalence(
                             _checkEnd_var, moment >= (_brk_start + _duration)
                         )
-                        arr += [_checkStart_var, _checkEnd_var]
+                        model.add_constraint(
+                            _check_break
+                            == model.logical_or(
+                                _checkStart_var, _checkEnd_var
+                            )  # OR to check outside break
+                        )
 
-                    # only if this shift is assigned -> logical_and = 1
-                    arr.append(model.shift_assignment_vars[key])
+                        arr.append(_check_break)
 
+                    shift_checker.append(model.logical_and(
+                        check_shift,
+                        model.shift_assignment_vars[key]
+                    ))
+                    
+                    # only if this shift is not assigned -> logical_and = 0
+                    arr.append(model.shift_assignment_vars[key])  
                     working_checker.append(model.logical_and(*arr))
+                    
 
                 # if all is ok => this member is working at this moment
                 model.add_constraint(
                     is_working_var == model.logical_or(*working_checker)
                 )
-                mem_isworking_vars.append(is_working_var)
+                check_mem_isworking_vars.append(is_working_var)
+                
+                model.add_constraint(
+                    is_shift_var == model.logical_or(*shift_checker)
+                )
+                check_object_times_vars.append(is_shift_var)
+                
             # print(model.sum(mem_isworking_vars),"ct_{0}_{1}".format(objtId,moment))
             # SUM(mem_isworking_vars) >= MinPeopleWorking
-            minPeopleWorking = 2
+            minPeopleWorking = 9
             model.add_constraint(
-                model.sum(mem_isworking_vars) >= minPeopleWorking,
-                "ct_{0}_{1}".format(objtId, moment),
+                model.sum(check_mem_isworking_vars) >= minPeopleWorking,
+                "MinPeopleWorking_{0}_{1}".format(objtId, moment),
+            )
+            
+            model.add_constraint(
+                model.sum(check_object_times_vars) <= 12,
+                "MaxObjectTime_{0}_{1}".format(objtId, moment),
             )
 
     # model.add_constraint(
@@ -547,7 +605,8 @@ def setup_objective(model: Model):
     total_members_assigment = model.sum(model.member_assignment_vars)
     model.add_kpi(total_members_assigment, "Total selected members")
     # model.add_kpi(model.total_salary_cost, "Total salary cost")
-    model.add_kpi(model.sum(model.shift_assignment_vars), "Total number of assignments")
+    total_shift_assignment = model.sum(model.shift_assignment_vars)
+    model.add_kpi(total_shift_assignment, "Total number of assignments")
     # model.add_kpi(model.average_member_work_time, "average work time")
 
     # total_over_average_worktime = model.sum(
@@ -565,7 +624,7 @@ def setup_objective(model: Model):
         total_members_assigment
         #     model.total_salary_cost
         #     + total_fairness
-        #     model.total_number_of_assignments
+        # + total_shift_assignment   
     )
     return
 
@@ -583,7 +642,7 @@ def print_solution(model: Model):
 def solve(model: Model, **kwargs):
     # Here, we set the number of threads for CPLEX to 2 and set the time limit to 2mins.
     model.parameters.threads = 16
-    model.parameters.timelimit = 7200  # solver should not take more than that !
+    model.parameters.timelimit = 14400  # solver should not take more than that !
     sol = model.solve(log_output=True, **kwargs)
     if sol is not None:
         print("solution for a cost of {}".format(model.objective_value))
@@ -636,7 +695,7 @@ def displayModel(model: Model):
         if model.solution.get_value(var.name) == 1
     ]
     df_break["ShiftID"] = [
-        "{0}_{1}_{2}".format(key[0], key[1], key[2].split("br")[0])
+        "{0}_{1}_{2}".format(key[0], key[1], key[2].split("_br")[0])
         for key, var in model.break_duration_vars.items()
         if model.solution.get_value(var.name) > 0
     ]
@@ -647,7 +706,7 @@ def displayModel(model: Model):
         if model.solution.get_value(var.name) == 1
     ]
     df_break["Start"] = [
-        model.solution.get_value(model.break_start_vars[key].name)
+        model.num2date(model.solution.get_value(model.break_start_vars[key].name))
         for key, var in model.break_duration_vars.items()
         if model.solution.get_value(var.name) > 0
     ]
