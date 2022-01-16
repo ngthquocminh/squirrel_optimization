@@ -601,7 +601,7 @@ def setup_constraints(model: Model):
         )
 
         for thisShiftKey in getShiftKeys:
-            thisShiftEnd = model.shift_start_vars[thisShiftKey]
+            thisShiftStart = model.shift_start_vars[thisShiftKey]
             shiftStartCheckingVarList = []
             objecttimeCheckingVarList = []
             for otherShiftKey in getShiftKeys:
@@ -616,11 +616,11 @@ def setup_constraints(model: Model):
 
                 model.add_equivalence(
                     checkStart_var,
-                    model.shift_start_vars[otherShiftKey] <= thisShiftEnd,
+                    model.shift_start_vars[otherShiftKey] <= thisShiftStart,
                 )
                 model.add_equivalence(
                     checkEnd_var,
-                    thisShiftEnd <= model.shift_end_vars[otherShiftKey] - 1,
+                    thisShiftStart <= model.shift_end_vars[otherShiftKey] - 1,
                 )
 
                 model.add_constraint(
@@ -647,11 +647,11 @@ def setup_constraints(model: Model):
 
                     # moment must be outsite break-range
                     model.add_equivalence(
-                        _checkStartBreak_var, thisShiftEnd <= _brk_start - 1
+                        _checkStartBreak_var, thisShiftStart <= _brk_start - 1
                     )
 
                     model.add_equivalence(
-                        _checkEndBreak_var, thisShiftEnd >= (
+                        _checkEndBreak_var, thisShiftStart >= (
                             _brk_start + _duration)
                     )
                     model.add_constraint(
