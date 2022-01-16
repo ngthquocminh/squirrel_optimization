@@ -715,7 +715,7 @@ def setup_constraints(model: Model):
         #             _checkEndBreak_var = model.binary_var()
 
         #             # moment must be outsite break-range
-        #             model.add_equivalence(_checkStartBreak_var, thisShiftEnd <= _brk_start)
+        #             model.add_equivalence(_checkStartBreak_var, thisShiftEnd <= _brk_start - 1)
 
         #             model.add_equivalence(
         #                 _checkEndBreak_var, thisShiftEnd >= (_brk_start + _duration)
@@ -726,6 +726,7 @@ def setup_constraints(model: Model):
         #                     _checkStartBreak_var, _checkEndBreak_var
         #                 )  # # logicOR to check inside breakRange
         #             )
+                    
         #             arr.append(_check_break)
 
         #         arr.append(model.shift_assignment_vars[thisShiftKey])
@@ -733,98 +734,97 @@ def setup_constraints(model: Model):
 
         #         model.add_equivalence(shiftCheckingVar, model.logical_and(*arr) == 1)
 
-        #         checkingVarList.append(shiftCheckingVar)
-                
+        #         checkingVarList.append(shiftCheckingVar)   
                 
         #     model.add_indicator(
         #         model.shift_assignment_vars[thisShiftKey],
         #         model.sum(checkingVarList) >= minPeopleWorking,
         #         name="2.2.MinPeopleWorking",
-        #     )
+        #    )
 
-        # for thisShiftKey in getShiftKeys:
-        #     ctactId, __, shft = thisShiftKey
-        #     for brk in range(0, MAX_BREAK_PER_SHIFT):
-        #         thisBreakKey = (ctactId, objtId, "{0}_br{1}".format(shft, brk))
-        #         thisBreakStart = model.break_start_vars[thisBreakKey]
+        for thisShiftKey in getShiftKeys:
+            ctactId, __, shft = thisShiftKey
+            for brk in range(0, MAX_BREAK_PER_SHIFT):
+                thisBreakKey = (ctactId, objtId, "{0}_br{1}".format(shft, brk))
+                thisBreakStart = model.break_start_vars[thisBreakKey]
 
-        #         shiftCheckingVarList = []
-        #         for otherShiftKey in getShiftKeys:
-        #             if (
-        #                 otherShiftKey[:1] == thisShiftKey[:1]
-        #             ):  # not check 2 shifts of the same day of a member
-        #                 continue
-        #             shiftCheckingVar = model.binary_var(
-        #                 "ShiftCheckingVar_{0}_{1}".format(thisBreakKey, otherShiftKey)
-        #             )
+                shiftCheckingVarList = []
+                for otherShiftKey in getShiftKeys:
+                    if (
+                        otherShiftKey[:1] == thisShiftKey[:1]
+                    ):  # not check 2 shifts of the same day of a member
+                        continue
+                    shiftCheckingVar = model.binary_var(
+                        "ShiftCheckingVar_{0}_{1}".format(thisBreakKey, otherShiftKey)
+                    )
 
-        #             checkStart_var = model.binary_var()
-        #             checkEnd_var = model.binary_var()
-        #             check_shift = model.binary_var()
+                    checkStart_var = model.binary_var()
+                    checkEnd_var = model.binary_var()
+                    check_shift = model.binary_var()
 
-        #             model.add_equivalence(
-        #                 checkStart_var,
-        #                 model.shift_start_vars[otherShiftKey] <= thisBreakStart,
-        #             )
-        #             model.add_equivalence(
-        #                 checkEnd_var,
-        #                 thisBreakStart <= model.shift_end_vars[otherShiftKey] - 1,
-        #             )
+                    model.add_equivalence(
+                        checkStart_var,
+                        model.shift_start_vars[otherShiftKey] <= thisBreakStart,
+                    )
+                    model.add_equivalence(
+                        checkEnd_var,
+                        thisBreakStart <= model.shift_end_vars[otherShiftKey] - 1,
+                    )
 
-        #             model.add_constraint(
-        #                 check_shift
-        #                 == model.logical_and(
-        #                     checkEnd_var, checkStart_var
-        #                 )  # logicAND to check inside shiftRange
-        #             )
-        #             workingCheckList = [check_shift]
-        #             # check with breaks of this shift
-        #             for brk in range(0, MAX_BREAK_PER_SHIFT):
-        #                 _key = (
-        #                     otherShiftKey[0],
-        #                     otherShiftKey[1],
-        #                     "{0}_br{1}".format(otherShiftKey[2], brk),
-        #                 )
-        #                 _brk_start = model.break_start_vars[_key]
-        #                 _duration = model.break_duration_vars[_key]
+                    model.add_constraint(
+                        check_shift
+                        == model.logical_and(
+                            checkEnd_var, checkStart_var
+                        )  # logicAND to check inside shiftRange
+                    )
+                    workingCheckList = [check_shift]
+                    # check with breaks of this shift
+                    for brk in range(0, MAX_BREAK_PER_SHIFT):
+                        _key = (
+                            otherShiftKey[0],
+                            otherShiftKey[1],
+                            "{0}_br{1}".format(otherShiftKey[2], brk),
+                        )
+                        _brk_start = model.break_start_vars[_key]
+                        _duration = model.break_duration_vars[_key]
 
-        #                 _check_break = model.binary_var()
-        #                 _checkStartBreak_var = model.binary_var()
-        #                 _checkEndBreak_var = model.binary_var()
+                        _check_break = model.binary_var()
+                        _checkStartBreak_var = model.binary_var()
+                        _checkEndBreak_var = model.binary_var()
 
-        #                 # moment must be outsite break-range
-        #                 model.add_equivalence(
-        #                     _checkStartBreak_var, thisBreakStart <= _brk_start - 1
-        #                 )
+                        # moment must be outsite break-range
+                        model.add_equivalence(
+                            _checkStartBreak_var, thisBreakStart <= _brk_start - 1
+                        )
 
-        #                 model.add_equivalence(
-        #                     _checkEndBreak_var,
-        #                     thisBreakStart >= (_brk_start + _duration),
-        #                 )
-        #                 model.add_constraint(
-        #                     _check_break
-        #                     == model.logical_or(
-        #                         _checkStartBreak_var, _checkEndBreak_var
-        #                     )  # # logicOR to check OUTside breakRange
-        #                 )
-        #                 workingCheckList.append(_check_break)
+                        model.add_equivalence(
+                            _checkEndBreak_var,
+                            thisBreakStart >= (_brk_start + _duration),
+                        )
+                        model.add_constraint(
+                            _check_break
+                            == model.logical_or(
+                                _checkStartBreak_var, _checkEndBreak_var
+                            )  # # logicOR to check OUTside breakRange
+                        )
+                        workingCheckList.append(_check_break)
 
-        #             workingCheckList.append(model.shift_assignment_vars[thisShiftKey])
-        #             workingCheckList.append(model.shift_assignment_vars[otherShiftKey])
+                    workingCheckList.append(model.shift_assignment_vars[thisShiftKey])
+                    workingCheckList.append(model.shift_assignment_vars[otherShiftKey])
 
-        #             model.add_equivalence(
-        #                 shiftCheckingVar, model.logical_and(*workingCheckList) == 1
-        #             )
+                    model.add_equivalence(
+                        shiftCheckingVar, model.logical_and(*workingCheckList) == 1
+                    )
 
-        #             shiftCheckingVarList.append(shiftCheckingVar)
+                    shiftCheckingVarList.append(shiftCheckingVar)
 
-        #         model.add_constraint(
-        #             model.if_then(
-        #                 model.break_duration_vars[thisBreakKey] >= 1,
-        #                 model.sum(shiftCheckingVarList) >= minPeopleWorking,
-        #             ),
-        #             "3.MinPeopleWorking",
-        #         )
+                model.add_constraint(
+                    model.if_then(
+                        model.break_duration_vars[thisBreakKey] >= 1,
+                        model.sum(shiftCheckingVarList) >= minPeopleWorking,
+                    ),
+                    "3.MinPeopleWorking",
+                )
                 
         # for thisShiftKey in getShiftKeys:
         #     ctactId, __, shft = thisShiftKey
@@ -950,7 +950,7 @@ def print_solution(model: Model):
 def solve(model: Model, **kwargs):
     # Here, we set the number of threads for CPLEX to 2 and set the time limit to 2mins.
     model.parameters.threads = 16
-    model.parameters.timelimit = 14400  # solver should not take more than that !
+    model.parameters.timelimit = 20000  # solver should not take more than that !
     sol = model.solve(log_output=True, **kwargs)
     if sol is not None:
         print("solution for a cost of {}".format(model.objective_value))
