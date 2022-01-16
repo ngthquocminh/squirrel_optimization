@@ -500,19 +500,23 @@ def setup_constraints(model: Model):
     # CONSTRAINT: MAKE SURE THERE ARE ALWAYS 'Minimum People Working' AT ANY MOMENT
     minPeopleWorking = model.shift_constraints.MinPeopleWorking
     vacancyQuantiyRequirement = model.vacancy_detail.Quantity
+    vacancyQuantiyRequirement = 12
     minPeopleWorking = 9
     for objtId, objt in tqdm(model.objecttime_ids.items()):
         # check for every moment with offset = 30min
         getShiftKeys = [
             key for key in model.shift_assignment_vars.keys() if key[1] == objtId
         ]
+        
+        # --------------------------------------
+        # Check Object-time Start
         checkedStartTime = objt.DateFrom
-        shiftCheckingVarList = []
+        shiftStartCheckingVarList = []
         for thisShiftKey in getShiftKeys:
             shiftCheckingVar = model.binary_var(
                 "ShiftCheckingVar_{0}_{1}".format(thisShiftKey, "START")
             )
-            shiftCheckingVarList.append(shiftCheckingVar)
+            shiftStartCheckingVarList.append(shiftCheckingVar)
 
             timeCheckingVar = model.binary_var()
             model.add_equivalence(
@@ -528,20 +532,21 @@ def setup_constraints(model: Model):
             )
 
         model.add_constraint(
-            model.sum(shiftCheckingVarList) >= minPeopleWorking, "1.1.MinPeopleWorking"
+            model.sum(shiftStartCheckingVarList) >= minPeopleWorking, "1.1.MinPeopleWorking"
         )
         
         model.add_constraint(
-            model.sum(shiftCheckingVarList) <= vacancyQuantiyRequirement, "1.1.MaxObjectTimes"
+            model.sum(shiftStartCheckingVarList) <= vacancyQuantiyRequirement, "1.1.MaxObjectTimes"
         )
 
+        # Check Object-time End
         checkedEndTime = objt.DateTo
-        shiftCheckingVarList = []
+        shiftEndCheckingVarList = []
         for thisShiftKey in getShiftKeys:
             shiftCheckingVar = model.binary_var(
                 "ShiftCheckingVar_{0}_{1}".format(thisShiftKey, "END")
             )
-            shiftCheckingVarList.append(shiftCheckingVar)
+            shiftEndCheckingVarList.append(shiftCheckingVar)
 
             timeCheckingVar = model.binary_var()
             model.add_equivalence(
@@ -570,17 +575,15 @@ def setup_constraints(model: Model):
             model.add_constraint(shiftCheckingVar == model.logical_and(*workingCheckList))
 
         model.add_constraint(
-            model.sum(shiftCheckingVarList) >= minPeopleWorking, "1.2.MinPeopleWorking"
+            model.sum(shiftEndCheckingVarList) >= minPeopleWorking, "1.2.MinPeopleWorking"
         )
         model.add_constraint(
-            model.sum(shiftCheckingVarList) <= vacancyQuantiyRequirement, "1.2.MaxObjectTimes"
+            model.sum(shiftEndCheckingVarList) <= vacancyQuantiyRequirement, "1.2.MaxObjectTimes"
         )
-        
-        
 
         for thisShiftKey in getShiftKeys:
             thisShiftEnd = model.shift_start_vars[thisShiftKey]
-            shiftCheckingVarList = []
+            shiftStartCheckingVarList = []
             objecttimeCheckingVarList = []
             for otherShiftKey in getShiftKeys:
                 if (
@@ -651,12 +654,12 @@ def setup_constraints(model: Model):
                 model.add_equivalence(shiftCheckingVar, model.logical_and(*(workingCheckList+breakCheck)) == 1)
                 model.add_equivalence(objecttimeCheckingVar, model.logical_and(*workingCheckList) == 1)
 
-                shiftCheckingVarList.append(shiftCheckingVar)
+                shiftStartCheckingVarList.append(shiftCheckingVar)
                 objecttimeCheckingVarList.append(objecttimeCheckingVar)
                 
             model.add_indicator(
                 model.shift_assignment_vars[thisShiftKey],
-                model.sum(shiftCheckingVarList)
+                model.sum(shiftStartCheckingVarList)
                 >= minPeopleWorking
                 - 1,  # cause this checker is already a working moment
                 name="2.1.MinPeopleWorking",
@@ -748,7 +751,7 @@ def setup_constraints(model: Model):
                 thisBreakKey = (ctactId, objtId, "{0}_br{1}".format(shft, brk))
                 thisBreakStart = model.break_start_vars[thisBreakKey]
 
-                shiftCheckingVarList = []
+                shiftStartCheckingVarList = []
                 for otherShiftKey in getShiftKeys:
                     if (
                         otherShiftKey[:1] == thisShiftKey[:1]
@@ -816,12 +819,12 @@ def setup_constraints(model: Model):
                         shiftCheckingVar, model.logical_and(*workingCheckList) == 1
                     )
 
-                    shiftCheckingVarList.append(shiftCheckingVar)
+                    shiftStartCheckingVarList.append(shiftCheckingVar)
 
                 model.add_constraint(
                     model.if_then(
                         model.break_duration_vars[thisBreakKey] >= 1,
-                        model.sum(shiftCheckingVarList) >= minPeopleWorking,
+                        model.sum(shiftStartCheckingVarList) >= minPeopleWorking,
                     ),
                     "3.MinPeopleWorking",
                 )
@@ -950,7 +953,7 @@ def print_solution(model: Model):
 def solve(model: Model, **kwargs):
     # Here, we set the number of threads for CPLEX to 2 and set the time limit to 2mins.
     model.parameters.threads = 16
-    model.parameters.timelimit = 20000  # solver should not take more than that !
+    model.parameters.timelimit = 36000  # solver should not take more than that !
     sol = model.solve(log_output=True, **kwargs)
     if sol is not None:
         print("solution for a cost of {}".format(model.objective_value))
@@ -972,7 +975,7 @@ def build(context=None, verbose=False, **kwargs):
     setup_variables(mdl)
     print("Setting up constraint")
     setup_constraints(mdl)
-    print("Setting up objectives")
+    print("Setting up objectives") 
     setup_objective(mdl)
     return mdl
 
