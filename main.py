@@ -143,6 +143,7 @@ def load_data(model, excel, verbose):
     model.objecttimes = VACANCY_OBJECTTIME
     model.worksite_refs = MEM_WORKSITE_REFERENCE
     model.shift_refs = MEM_SHIFT_REFERENCE
+    # Question: Why 25 observations??
     model.member_measurement = MEM_MEASUREMENT[:25]
     model.shift_constraints = SHIFT_CONSTRAINTS
     model.vacancy_detail = VACANCY_DETAIL
@@ -363,17 +364,27 @@ def setup_constraints(model: Model):
         varKey = (ctactId, objtId, shft)
         shiftStart_var = model.shift_start_vars[varKey]
         shiftEnd_var = model.shift_end_vars[varKey]
-
+        
+        
+        # Question: All values of objt.DateFrom will be 300? As 
+        # model.objecttime_ids = {i: o for i, o in enumerate(lst[:1])}
+        
         # Set range for shift_start according to objectTime
         model.add_constraint(
             shiftStart_var >= objt.DateFrom, "Shift.Start>=Date.From",
         )
+        
+        # Question: All values of objt.DateFrom will be 1320? As 
+        # model.objecttime_ids = {i: o for i, o in enumerate(lst[:1])}
 
         # Set range for shift_end according to objectTime
         model.add_constraint(
             shiftEnd_var <= objt.DateTo, "Shift.End<=Date.To",
         )
 
+        # Question: if shift is not assigned, shiftStart_var == shiftEnd_var can still
+        # be non-zero values
+        
         # if shift is not assigned
         model.add_equivalence(
             model.shift_assignment_vars[varKey],
