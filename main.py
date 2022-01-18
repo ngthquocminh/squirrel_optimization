@@ -413,6 +413,10 @@ def setup_constraints(model: Model):
                 model.break_start_vars[brk_key] >= shiftStart_var,
                 "Break.Start>=Shift.Start",
             )
+            
+        # Note: You can replace break_duration_vars with DEFAULT_BREAK_LENGTH 
+        # to reduce the number of constraints
+        
             model.add_constraint(
                 model.break_duration_vars[brk_key] +
                 model.break_start_vars[brk_key]
@@ -443,7 +447,11 @@ def setup_constraints(model: Model):
                     model.break_duration_vars[brk_key] == DEFAULT_BREAK_LENGTH,
                 )
             )
-
+            
+            # Question: In the previous indicator constraint, you are already setting 
+            # break_duration_vars == DEFAULT_BREAK_LENGTH, then this constraint might be 
+            # redundant?
+            
             model.add_constraint(
                 model.if_then(
                     model.break_duration_vars[brk_key] >= 1,  # > 0
@@ -451,6 +459,7 @@ def setup_constraints(model: Model):
                 ),
                 "Break.Duration==0_Or_>=MIN",
             )
+
 
             if brk < MAX_BREAK_PER_SHIFT - 1:
                 next_brk_key = (ctactId, objtId,
@@ -500,6 +509,8 @@ def setup_constraints(model: Model):
                 nextShift_start = model.shift_start_vars[keyNextShift]
 
                 # By default, shift1.end <= shift2.start
+                # Note: Can remove this constraint as this would be redundant due to the 
+                # next constraint
                 model.add_constraint(
                     thisShift_end <= nextShift_start,
                     "Shift{0}.End<=Shift{1}.Start".format(shft - 1, shft),
@@ -527,6 +538,8 @@ def setup_constraints(model: Model):
 
         # --------------------------------------
         # Check Object-time Start
+        # Question: Is this constraint to check if shift starts at checkedStartTime or not?
+        
         checkedStartTime = objt.DateFrom
         shiftStartCheckingVarList = []
         for thisShiftKey in getShiftKeys:
