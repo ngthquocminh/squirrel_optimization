@@ -723,6 +723,7 @@ def setup_constraints(model: Model):
                     shiftCheckingVar, model.logical_and(*arr) == 1)
 
                 checkingVarList.append(shiftCheckingVar)
+            
             isNotEndDay = model.binary_var()
             model.add_equivalence(
                 isNotEndDay,
@@ -735,98 +736,96 @@ def setup_constraints(model: Model):
                         isNotEndDay
                     ) == 1,
                     model.sum(checkingVarList) >= minPeopleWorking
-                )
-                ctname="2.2.MinPeopleWorking",
+                ),
+                ctname="2.2.MinPeopleWorking"
             )
 
-        # for thisShiftKey in getShiftKeys:
-        #     ctactId, __ = thisShiftKey
-        #     for brk in range(0, MAX_BREAK_PER_SHIFT):
-        #         thisBreakKey = (ctactId, objtId, brk)
-        #         thisBreakStart = model.break_start_vars[thisBreakKey]
+        for thisShiftKey in getShiftKeys:
+            ctactId, __ = thisShiftKey
+            for brk in range(0, MAX_BREAK_PER_SHIFT):
+                thisBreakKey = (ctactId, objtId, brk)
+                thisBreakStart = model.break_start_vars[thisBreakKey]
 
-        #         shiftStartCheckingVarList = []
-        #         for otherShiftKey in getShiftKeys:
-        #             if (
-        #                 otherShiftKey[:1] == thisShiftKey[:1]
-        #             ):  # not check 2 shifts of the same day of a member
-        #                 continue
-        #             shiftCheckingVar = model.binary_var(
-        #                 "ShiftCheckingVar_{0}_{1}".format(
-        #                     thisBreakKey, otherShiftKey)
-        #             )
+                breakStartCheckingVarList = []
+                for otherShiftKey in getShiftKeys:
+                    if otherShiftKey == thisShiftKey:  # not check 2 shifts of the same day of a member
+                        continue
+                    shiftCheckingVar = model.binary_var(
+                        "ShiftCheckingVar_{0}_{1}".format(
+                            thisBreakKey, otherShiftKey)
+                    )
 
-        #             checkStart_var = model.binary_var()
-        #             checkEnd_var = model.binary_var()
-        #             checkShift_var = model.binary_var()
+                    checkStart_var = model.binary_var()
+                    checkEnd_var = model.binary_var()
+                    checkShift_var = model.binary_var()
 
-        #             model.add_equivalence(
-        #                 checkStart_var,
-        #                 model.shift_start_vars[otherShiftKey] <= thisBreakStart,
-        #             )
-        #             model.add_equivalence(
-        #                 checkEnd_var,
-        #                 thisBreakStart <= model.shift_end_vars[otherShiftKey] - 1,
-        #             )
+                    model.add_equivalence(
+                        checkStart_var,
+                        model.shift_start_vars[otherShiftKey] <= thisBreakStart,
+                    )
+                    model.add_equivalence(
+                        checkEnd_var,
+                        thisBreakStart <= model.shift_end_vars[otherShiftKey] - 1,
+                    )
 
-        #             model.add_constraint(
-        #                 checkShift_var
-        #                 == model.logical_and(
-        #                     checkEnd_var, checkStart_var
-        #                 )  # logicAND to check inside shiftRange
-        #             )
-        #             workingCheckList = [checkShift_var]
-        #             # check with breaks of this shift
-        #             for brk in range(0, MAX_BREAK_PER_SHIFT):
-        #                 _key = (
-        #                     otherShiftKey[0],
-        #                     otherShiftKey[1],
-        #                     brk,
-        #                 )
-        #                 _brk_start = model.break_start_vars[_key]
-        #                 _duration = model.break_duration_vars[_key]
+                    model.add_constraint(
+                        checkShift_var
+                        == model.logical_and(
+                            checkEnd_var, checkStart_var
+                        )  # logicAND to check inside shiftRange
+                    )
+                    workingCheckList = [checkShift_var]
+                    # check with breaks of this shift
+                    for brk in range(0, MAX_BREAK_PER_SHIFT):
+                        _key = (
+                            otherShiftKey[0],
+                            otherShiftKey[1],
+                            brk,
+                        )
+                        _brk_start = model.break_start_vars[_key]
+                        _duration = model.break_duration_vars[_key]
 
-        #                 _check_break = model.binary_var()
-        #                 _checkStartBreak_var = model.binary_var()
-        #                 _checkEndBreak_var = model.binary_var()
+                        _check_break = model.binary_var()
+                        _checkStartBreak_var = model.binary_var()
+                        _checkEndBreak_var = model.binary_var()
 
-        #                 # moment must be outsite break-range
-        #                 model.add_equivalence(
-        #                     _checkStartBreak_var, thisBreakStart <= _brk_start - 1
-        #                 )
+                        # moment must be outsite break-range
+                        model.add_equivalence(
+                            _checkStartBreak_var, thisBreakStart <= _brk_start - 1
+                        )
 
-        #                 model.add_equivalence(
-        #                     _checkEndBreak_var,
-        #                     thisBreakStart >= (_brk_start + _duration),
-        #                 )
-        #                 model.add_constraint(
-        #                     _check_break
-        #                     == model.logical_or(
-        #                         _checkStartBreak_var, _checkEndBreak_var
-        #                     )  # # logicOR to check OUTside breakRange
-        #                 )
-        #                 workingCheckList.append(_check_break)
+                        model.add_equivalence(
+                            _checkEndBreak_var,
+                            thisBreakStart >= (_brk_start + _duration),
+                        )
+                        model.add_constraint(
+                            _check_break
+                            == model.logical_or(
+                                _checkStartBreak_var, _checkEndBreak_var
+                            )  # # logicOR to check OUTside breakRange
+                        )
+                        workingCheckList.append(_check_break)
 
-        #             workingCheckList.append(
-        #                 model.shift_assignment_vars[thisShiftKey])
-        #             workingCheckList.append(
-        #                 model.shift_assignment_vars[otherShiftKey])
+                    workingCheckList.append(
+                        model.shift_assignment_vars[thisShiftKey])
+                    workingCheckList.append(
+                        model.shift_assignment_vars[otherShiftKey])
 
-        #             model.add_equivalence(
-        #                 shiftCheckingVar, model.logical_and(
-        #                     *workingCheckList) == 1
-        #             )
+                    model.add_equivalence(
+                        shiftCheckingVar, model.logical_and(
+                            *workingCheckList) == 1
+                    )
 
-        #             shiftStartCheckingVarList.append(shiftCheckingVar)
+                    breakStartCheckingVarList.append(shiftCheckingVar)
 
-        #         model.add_constraint(
-        #             model.if_then(
-        #                 model.break_duration_vars[thisBreakKey] >= 1,
-        #                 model.sum(
-        #                     shiftStartCheckingVarList) >= minPeopleWorking,
-        #             ),
-        #             "3.MinPeopleWorking",
-        #         )
+                model.add_constraint(
+                    model.if_then(
+                        model.break_duration_vars[thisBreakKey] >= 1,
+                        model.sum(
+                            shiftStartCheckingVarList) >= minPeopleWorking,
+                    ),
+                    "3.MinPeopleWorking",
+                )
 
         # for thisShiftKey in getShiftKeys:
         #     ctactId, __, shft = thisShiftKey
