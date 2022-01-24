@@ -471,7 +471,7 @@ def setup_constraints(model: Model):
     for objtId, objt in tqdm(model.objecttime_ids.items()):
         # check for every moment with offset = 30min
         for moment in range(
-            int(objt.DateFrom), int(objt.DateTo) + 1, 30
+            int(objt.DateFrom), int(objt.DateTo) + 1, 15
         ):  # include objt.DateTo
             # this var_list is to check if each member is working or not at this moment
             check_mem_isworking_vars = []

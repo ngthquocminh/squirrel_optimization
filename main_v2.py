@@ -1,6 +1,5 @@
 from collections import namedtuple
 import datetime
-from turtle import mode
 from tqdm import tqdm
 import pandas as pd
 from docplex.mp.model import Model
@@ -54,15 +53,13 @@ TShiftConstraints = namedtuple(
 )
 TRange = namedtuple("TRange", ["From", "To"])
 
-file_name = "./Data/Squirrel_Optimization.xlsx"
+file_name = "Squirrel_Optimization.xlsx"
 excel_data_file = pd.ExcelFile(file_name)
 
-MAX_BREAK_PER_SHIFT = 2
+MAX_BREAK_PER_SHIFT = 4
 DEFAULT_BREAK_LENGTH = 0.5 * 60
 MIN_SHIFT_LENGTH = 4 * 60
 NUM_OBJECTTIME_PER_DAY = 12
-START_TIMES_LIST = list(t*60 for t in [5, 6, 8, 9, 13, 14, 15, 16])
-SHIFT_DURATION_LIST = list(t*60 for t in [4, 8, 10])
 
 
 def lookup(lst, func):
@@ -109,7 +106,6 @@ def load_data(model, excel, verbose):
     del df_teamMember_availability["Team Member"]
     del df_teamMember_worksiteReference["Team Member"]
     del df_teamMember_shiftReference["Team Member"]
-
     del df_teamMember_measurement["Team Member"]
 
     MEM_AVAILAVILITY = [
@@ -146,7 +142,7 @@ def load_data(model, excel, verbose):
     model.objecttimes = VACANCY_OBJECTTIME
     model.worksite_refs = MEM_WORKSITE_REFERENCE
     model.shift_refs = MEM_SHIFT_REFERENCE
-    model.member_measurement = MEM_MEASUREMENT[:25]
+    model.member_measurement = MEM_MEASUREMENT[:11]
     model.shift_constraints = SHIFT_CONSTRAINTS
     model.vacancy_detail = VACANCY_DETAIL
 
@@ -205,10 +201,12 @@ def setup_variables(model: Model):
 
     # BreakDuration
     # print(model.break_start_vars)
-    model.break_allocated_vars = model.binary_var_cube(
+    model.break_duration_vars = model.integer_var_cube(
         keys1=model.members.keys(),
         keys2=model.objecttime_ids.keys(),
         keys3=[j for j in range(0, MAX_BREAK_PER_SHIFT)],
+        lb=0,
+        ub=DEFAULT_BREAK_LENGTH,  # maximum break length (in minute)
         name="BreakDuration",
     )
 
@@ -238,6 +236,13 @@ def setup_constraints(model: Model):
         model.add_constraint(
             model.equivalence_constraint(
                 assignmendVar, model.sum(lstShift) >= 1, true_value=1
+            ),
+            "ShiftAssignedToMemberAssigned",
+        )
+        # else
+        model.add_constraint(
+            model.equivalence_constraint(
+                assignmendVar, model.sum(lstShift) == 0, true_value=0
             ),
             "ShiftAssignedToMemberAssigned",
         )
@@ -289,38 +294,23 @@ def setup_constraints(model: Model):
     #             "LimitConsecutiveWorkedDays",
     #         )
 
-    # Heuristics
-    for ctactId, objtId in model.shift_assignment_vars.keys():
-        objt = model.objecttime_ids[objtId]
-        varKey = (ctactId, objtId)
-        shiftStartVar = model.shift_start_vars[(ctactId, objtId)]
-        shiftEndtVar = model.shift_end_vars[(ctactId, objtId)]
-
-        listVar1 = []
-        for start_time in START_TIMES_LIST:
-            start_time = getDate(objt.DateFrom) * 24 * 60 + start_time
-            newVar = model.binary_var()
-            model.add_equivalence(
-                newVar, shiftStartVar == start_time
+    # CONSTRAINT : LIMIT WORKING HOUR PER DAY
+    for ctactId in model.members.keys():
+        for objtId, objt in model.objecttime_ids.items():
+            model.add_constraint(
+                model.le_constraint(
+                    model.shift_end_vars[(ctactId, objtId)]
+                    - model.shift_start_vars[(ctactId, objtId)]
+                    - model.sum(
+                        model.break_duration_vars[
+                            (ctactId, objtId, brk)
+                        ]
+                        for brk in range(0, MAX_BREAK_PER_SHIFT)
+                    ),
+                    model.shift_constraints.MaxHoursPerDay * 60,  # Minutes
+                    "MaxHoursPerDay",
+                )
             )
-            listVar1.append(newVar)
-
-        model.add_constraint(
-            model.sums(*listVar1) == 1
-        )
-        del listVar1
-
-        listVar2 = []
-        for shift_duration in SHIFT_DURATION_LIST:
-            newVar = model.binary_var()
-            model.add_equivalence(
-                newVar, shiftEndtVar - shiftStartVar == shift_duration
-            )
-            listVar2.append(newVar)
-
-        model.add_constraint(
-            model.sums(*listVar2) == 1
-        )
 
     # CONSTRAINT : LIMIT WORKING HOUR PER WEEEK
     # currently, considering the whole vacancy is a week
@@ -335,7 +325,7 @@ def setup_constraints(model: Model):
     #         for shft in range(0, MAX_SHIFT_PER_OBJECTTIME)
     #     )
     #     # -model.sum(
-    #     #     model.break_allocated_vars[(ctactId, objtId, brk)] * DEFAULT_BREAK_LENGTH
+    #     #     model.break_duration_vars[(ctactId, objtId, "{0}_br{1}".format(shft, brk))]
     #     #     for objtId in model.objecttime_ids.keys()
     #     #     for shft in range(0, MAX_SHIFT_PER_OBJECTTIME)
     #     #     for brk in range(0, MAX_BREAK_PER_SHIFT)
@@ -380,9 +370,9 @@ def setup_constraints(model: Model):
             name="ShiftAssignment",
         )
 
-        isScheduledBreak = model.binary_var()
+        isScheduleBreak = model.binary_var()
         model.add_equivalence(
-            isScheduledBreak,
+            isScheduleBreak,
             shiftEnd_var - shiftStart_var
             >= model.shift_constraints.ScheduledBreakHours.From + 1,
         )
@@ -394,49 +384,52 @@ def setup_constraints(model: Model):
                 "Break.Start>=Shift.Start",
             )
             model.add_constraint(
-                model.break_allocated_vars[brk_key] * DEFAULT_BREAK_LENGTH +
+                model.break_duration_vars[brk_key] +
                 model.break_start_vars[brk_key]
                 <= shiftEnd_var,
                 "Break.Start+Duration<=Shift.End",
             )
 
-            if brk == 0:
-                model.add_indicator(
-                    isScheduledBreak,
+            model.add_constraint(
+                model.indicator_constraint(
+                    isScheduleBreak,
                     model.break_start_vars[brk_key]
                     >= shiftStart_var
                     + model.shift_constraints.ScheduledBreakHours.From,
                 )
+            )
 
-                model.add_indicator(
-                    isScheduledBreak,
-                    model.break_start_vars[brk_key] + DEFAULT_BREAK_LENGTH *
-                    model.break_allocated_vars[brk_key]
+            model.add_constraint(
+                model.indicator_constraint(
+                    isScheduleBreak,
+                    model.break_start_vars[brk_key] + DEFAULT_BREAK_LENGTH
                     <= shiftStart_var + model.shift_constraints.ScheduledBreakHours.To,
                 )
-            else:
-                model.add_indicator(
-                    isScheduledBreak,
-                    model.break_start_vars[brk_key]
-                    >= shiftStart_var
-                    + model.shift_constraints.ScheduledBreakHours.To,
-                )
+            )
 
-            model.add_indicator(
-                isScheduledBreak,
-                model.break_allocated_vars[brk_key] == 0,
-                active_value=0
+            model.add_constraint(
+                model.indicator_constraint(
+                    isScheduleBreak,
+                    model.break_duration_vars[brk_key] == DEFAULT_BREAK_LENGTH,
+                )
+            )
+
+            model.add_constraint(
+                model.if_then(
+                    model.break_duration_vars[brk_key] >= 1,  # > 0
+                    model.break_duration_vars[brk_key] == DEFAULT_BREAK_LENGTH,
+                ),
+                "Break.Duration==0_Or_>=MIN",
             )
 
             if brk < MAX_BREAK_PER_SHIFT - 1:
                 next_brk_key = (ctactId, objtId, brk + 1)
                 model.add_constraint(
-                    model.break_allocated_vars[brk_key] * DEFAULT_BREAK_LENGTH +
+                    model.break_duration_vars[brk_key] +
                     model.break_start_vars[brk_key]
                     <= model.break_start_vars[next_brk_key],
                     "Break.Start+Duration<=NextBreak.Start",
                 )
-
         # timeAvailability = lookup(
         #     model.availabilities,
         #     lambda i: (ctactId == i.ContactID)
@@ -472,106 +465,420 @@ def setup_constraints(model: Model):
     minPeopleWorking = 5
     for objtId, objt in tqdm(model.objecttime_ids.items()):
         # check for every moment with offset = 30min
-        for moment in range(
-            int(objt.DateFrom), int(objt.DateTo) + 1, 15
-        ):  # include objt.DateTo
-            # this var_list is to check if each member is working or not at this moment
-            check_mem_isworking_vars = []
-            check_object_times_vars = []
-            for contactId in model.members.keys():
-                working_checker = []
-                shift_checker = []
-                is_working_var = model.binary_var(
-                    "working_{0}_{1}".format(moment, contactId)
+        getShiftKeys = [
+            key for key in model.shift_assignment_vars.keys() if key[1] == objtId
+        ]
+
+        # --------------------------------------
+        # Check Object-time Start
+        checkedStartTime = objt.DateFrom
+        shiftStartCheckingVarList = []
+        for thisShiftKey in getShiftKeys:
+            shiftCheckingVar = model.binary_var(
+                "ShiftCheckingVar_{0}_{1}".format(thisShiftKey, "START")
+            )
+            shiftStartCheckingVarList.append(shiftCheckingVar)
+
+            timeCheckingVar = model.binary_var()
+            model.add_equivalence(
+                timeCheckingVar,
+                checkedStartTime == model.shift_start_vars[thisShiftKey],
+            )
+
+            model.add_constraint(
+                shiftCheckingVar
+                == model.logical_and(
+                    timeCheckingVar, model.shift_assignment_vars[thisShiftKey]
                 )
-                is_shift_var = model.binary_var(
-                    "shift_{0}_{1}".format(moment, contactId)
+            )
+
+        model.add_constraint(
+            model.sum(
+                shiftStartCheckingVarList) >= minPeopleWorking, "1.1.MinPeopleWorking"
+        )
+
+        model.add_constraint(
+            model.sum(
+                shiftStartCheckingVarList) <= vacancyQuantiyRequirement, "1.1.MaxObjectTimes"
+        )
+
+        # Check Object-time End
+        checkedEndTime = objt.DateTo
+        shiftEndCheckingVarList = []
+        objtimeEndCheckingVarList = []
+        for thisShiftKey in getShiftKeys:
+            shiftCheckingVar = model.binary_var(
+                "ShiftCheckingVar_{0}_{1}".format(thisShiftKey, "END")
+            )
+            objecttimeCheckingVar = model.binary_var(
+                "ObjtimeCheckingVar_{0}_{1}".format(thisShiftKey, "END")
+            )
+            shiftEndCheckingVarList.append(shiftCheckingVar)
+            objtimeEndCheckingVarList.append(objecttimeCheckingVar)
+
+            timeCheckingVar = model.binary_var()
+            model.add_equivalence(
+                timeCheckingVar, checkedEndTime == model.shift_end_vars[thisShiftKey],
+            )
+            workingCheckList = [timeCheckingVar]
+            for brk in range(0, MAX_BREAK_PER_SHIFT):
+                _key = (
+                    thisShiftKey[0],
+                    thisShiftKey[1],
+                    brk
+                )
+                _brk_start = model.break_start_vars[_key]
+                _duration = model.break_duration_vars[_key]
+
+                _checkEndBreak_var = model.binary_var()
+
+                model.add_equivalence(
+                    _checkEndBreak_var, checkedEndTime >= (
+                        _brk_start + _duration + 1)
                 )
 
-                key = (contactId, objtId)
+                workingCheckList.append(_checkEndBreak_var)
 
-                start = model.shift_start_vars[key]
-                end = model.shift_end_vars[key]
+            workingCheckList.append(model.shift_assignment_vars[thisShiftKey])
+
+            model.add_constraint(shiftCheckingVar ==
+                                 model.logical_and(*workingCheckList))
+            model.add_constraint(objecttimeCheckingVar == model.logical_and(
+                timeCheckingVar, model.shift_assignment_vars[thisShiftKey]))
+
+        model.add_constraint(
+            model.sum(
+                shiftEndCheckingVarList) >= minPeopleWorking, "1.2.MinPeopleWorking"
+        )
+        model.add_constraint(
+            model.sum(
+                objtimeEndCheckingVarList) <= vacancyQuantiyRequirement, "1.2.MaxObjectTimes"
+        )
+
+        # Check with shift-start
+        for thisShiftKey in getShiftKeys:
+            thisShiftStart = model.shift_start_vars[thisShiftKey]
+            shiftStartCheckingVarList = []
+            objecttimeCheckingVarList = []
+            for otherShiftKey in getShiftKeys:
+                # not check with this shift it-self
+                if (otherShiftKey[:1] == thisShiftKey[:1]):
+                    continue
 
                 checkStart_var = model.binary_var()
                 checkEnd_var = model.binary_var()
-                check_shift = model.binary_var()
+                checkShift_var = model.binary_var()
 
-                # moment must be insite shift-range
-                model.add_constraint(
-                    model.equivalence_constraint(
-                        checkStart_var, start <= moment)
+                model.add_equivalence(
+                    checkStart_var,
+                    model.shift_start_vars[otherShiftKey] <= thisShiftStart,
+                )
+                model.add_equivalence(
+                    checkEnd_var,
+                    thisShiftStart <= model.shift_end_vars[otherShiftKey] - 1,
                 )
 
                 model.add_constraint(
-                    model.equivalence_constraint(
-                        checkEnd_var, (moment == end) if moment == objt.DateTo else (moment <= end - 1))
-                )
-
-                model.add_constraint(
-                    check_shift
+                    checkShift_var
                     == model.logical_and(
                         checkEnd_var, checkStart_var
-                    )  # AND to check inside shift
+                    )  # logicAND to check inside shiftRange
                 )
-                arr = [check_shift]
+                workingCheckList = [checkShift_var]
 
                 # check with breaks of this shift
+                breakCheck = []
                 for brk in range(0, MAX_BREAK_PER_SHIFT):
-                    _key = (contactId, objtId, brk)
+                    _key = (
+                        otherShiftKey[0],
+                        otherShiftKey[1],
+                        brk,
+                    )
                     _brk_start = model.break_start_vars[_key]
-                    _duration = model.break_allocated_vars[_key]
+                    _duration = model.break_duration_vars[_key]
                     _check_break = model.binary_var()
-                    _checkStart_var = model.binary_var()
-                    _checkEnd_var = model.binary_var()
+                    _checkStartBreak_var = model.binary_var()
+                    _checkEndBreak_var = model.binary_var()
 
                     # moment must be outsite break-range
                     model.add_equivalence(
-                        _checkStart_var, moment <= _brk_start - 1)
+                        _checkStartBreak_var, thisShiftStart <= _brk_start - 1
+                    )
 
                     model.add_equivalence(
-                        _checkEnd_var, moment >= (_brk_start + _duration)
+                        _checkEndBreak_var, thisShiftStart >= (
+                            _brk_start + _duration)
                     )
                     model.add_constraint(
                         _check_break
                         == model.logical_or(
-                            _checkStart_var, _checkEnd_var
-                        )  # OR to check outside break
+                            _checkStartBreak_var, _checkEndBreak_var
+                        )  # # logicOR to check OUTide breakRange
+                    )
+                    breakCheck.append(_check_break)
+
+                workingCheckList.append(
+                    model.shift_assignment_vars[thisShiftKey])
+                workingCheckList.append(
+                    model.shift_assignment_vars[otherShiftKey])
+
+                shiftCheckingVar = model.binary_var(
+                    "ShiftCheckingVar_Start_{0}_{1}".format(
+                        thisShiftKey, otherShiftKey)
+                )
+                # objecttimeCheckingVar = model.binary_var(
+                #     "ObjectTimeCheckingVar_Start_{0}_{1}".format(
+                #         thisShiftKey, otherShiftKey)
+                # )
+                model.add_equivalence(shiftCheckingVar, model.logical_and(
+                    *(workingCheckList+breakCheck)) == 1)
+                # model.add_equivalence(
+                #     objecttimeCheckingVar, model.logical_and(*workingCheckList) == 1)
+
+                shiftStartCheckingVarList.append(shiftCheckingVar)
+                # objecttimeCheckingVarList.append(objecttimeCheckingVar)
+
+            model.add_indicator(
+                model.shift_assignment_vars[thisShiftKey],
+                model.sum(shiftStartCheckingVarList)
+                >= minPeopleWorking
+                - 1,  # cause this checker is already a working moment
+                name="2.1.MinPeopleWorking",
+            )
+
+            # model.add_indicator(
+            #     model.shift_assignment_vars[thisShiftKey],
+            #     model.sum(objecttimeCheckingVarList)
+            #     # cause this checker is already a working moment
+            #     <= vacancyQuantiyRequirement - 1,
+            #     name="2.1.MaxObjectTimes",
+            # )
+
+        # Check with shift-end
+        for thisShiftKey in getShiftKeys:
+            thisShiftEnd = model.shift_end_vars[thisShiftKey]
+            checkingVarList = []
+            for otherShiftKey in getShiftKeys:
+                if (otherShiftKey == thisShiftKey):  # not check with this shift it-self
+                    continue
+
+                shiftCheckingVar = model.binary_var(
+                    "ShiftCheckingVar_End_{0}_{1}".format(
+                        thisShiftKey, otherShiftKey)
+                )
+                checkStart_var = model.binary_var()
+                checkEnd_var = model.binary_var()
+                checkShift_var = model.binary_var()
+
+                model.add_equivalence(
+                    checkStart_var,
+                    model.shift_start_vars[otherShiftKey] <= thisShiftEnd,
+                )
+                model.add_equivalence(
+                    checkEnd_var, thisShiftEnd <= model.shift_end_vars[otherShiftKey] - 1
+                )
+
+                model.add_constraint(
+                    checkShift_var
+                    == model.logical_and(
+                        checkEnd_var, checkStart_var
+                    )  # logicAND to check inside shiftRange
+                )
+                arr = [checkShift_var]
+
+                # check with breaks of this shift
+                for brk in range(0, MAX_BREAK_PER_SHIFT):
+                    _key = (
+                        otherShiftKey[0],
+                        otherShiftKey[1],
+                        brk
+                    )
+                    _brk_start = model.break_start_vars[_key]
+                    _duration = model.break_duration_vars[_key]
+                    _check_break = model.binary_var()
+                    _checkStartBreak_var = model.binary_var()
+                    _checkEndBreak_var = model.binary_var()
+
+                    # moment must be outsite break-range
+                    model.add_equivalence(
+                        _checkStartBreak_var, thisShiftEnd <= _brk_start - 1)
+
+                    model.add_equivalence(
+                        _checkEndBreak_var, thisShiftEnd >= (
+                            _brk_start + _duration)
+                    )
+                    model.add_constraint(
+                        _check_break
+                        == model.logical_or(
+                            _checkStartBreak_var, _checkEndBreak_var
+                        )  # # logicOR to check inside breakRange
                     )
 
                     arr.append(_check_break)
 
-                shift_checker.append(model.logical_and(
-                    check_shift,
-                    model.shift_assignment_vars[key]
-                ))
+                arr.append(model.shift_assignment_vars[thisShiftKey])
+                arr.append(model.shift_assignment_vars[otherShiftKey])
 
-                # only if this shift is not assigned -> logical_and = 0
-                arr.append(model.shift_assignment_vars[key])
-                working_checker.append(model.logical_and(*arr))
+                model.add_equivalence(
+                    shiftCheckingVar, model.logical_and(*arr) == 1)
 
-                # if all is ok => this member is working at this moment
-                model.add_constraint(
-                    is_working_var == model.logical_or(*working_checker)
-                )
-                check_mem_isworking_vars.append(is_working_var)
-
-                model.add_constraint(
-                    is_shift_var == model.logical_or(*shift_checker)
-                )
-                check_object_times_vars.append(is_shift_var)
-
-            # print(model.sum(mem_isworking_vars),"ct_{0}_{1}".format(objtId,moment))
-            # SUM(mem_isworking_vars) >= MinPeopleWorking
+                checkingVarList.append(shiftCheckingVar)
+            
+            isNotEndDay = model.binary_var()
+            model.add_equivalence(
+                isNotEndDay,
+                thisShiftEnd <= objt.DateTo-1,
+            )
             model.add_constraint(
-                model.sum(check_mem_isworking_vars) >= minPeopleWorking,
-                "MinPeopleWorking_{0}_{1}".format(objtId, moment),
+                model.if_then(
+                    model.logical_and(
+                        model.shift_assignment_vars[thisShiftKey],
+                        isNotEndDay
+                    ) == 1,
+                    model.sum(checkingVarList) >= minPeopleWorking
+                ),
+                ctname="2.2.MinPeopleWorking"
             )
 
-            model.add_constraint(
-                model.sum(check_object_times_vars) <= vacancyQuantiyRequirement,
-                "MaxObjectTime_{0}_{1}".format(objtId, moment),
-            )
+        for thisShiftKey in getShiftKeys:
+            ctactId, __ = thisShiftKey
+            for brk in range(0, MAX_BREAK_PER_SHIFT):
+                thisBreakKey = (ctactId, objtId, brk)
+                thisBreakStart = model.break_start_vars[thisBreakKey]
+
+                breakStartCheckingVarList = []
+                for otherShiftKey in getShiftKeys:
+                    if otherShiftKey == thisShiftKey:  # not check 2 shifts of the same day of a member
+                        continue
+                    shiftCheckingVar = model.binary_var(
+                        "ShiftCheckingVar_{0}_{1}".format(
+                            thisBreakKey, otherShiftKey)
+                    )
+
+                    checkStart_var = model.binary_var()
+                    checkEnd_var = model.binary_var()
+                    checkShift_var = model.binary_var()
+
+                    model.add_equivalence(
+                        checkStart_var,
+                        model.shift_start_vars[otherShiftKey] <= thisBreakStart,
+                    )
+                    model.add_equivalence(
+                        checkEnd_var,
+                        thisBreakStart <= model.shift_end_vars[otherShiftKey] - 1,
+                    )
+
+                    model.add_constraint(
+                        checkShift_var
+                        == model.logical_and(
+                            checkEnd_var, checkStart_var
+                        )  # logicAND to check inside shiftRange
+                    )
+                    workingCheckList = [checkShift_var]
+                    # check with breaks of this shift
+                    for brk in range(0, MAX_BREAK_PER_SHIFT):
+                        _key = (
+                            otherShiftKey[0],
+                            otherShiftKey[1],
+                            brk,
+                        )
+                        _brk_start = model.break_start_vars[_key]
+                        _duration = model.break_duration_vars[_key]
+
+                        _check_break = model.binary_var()
+                        _checkStartBreak_var = model.binary_var()
+                        _checkEndBreak_var = model.binary_var()
+
+                        # moment must be outsite break-range
+                        model.add_equivalence(
+                            _checkStartBreak_var, thisBreakStart <= _brk_start - 1
+                        )
+
+                        model.add_equivalence(
+                            _checkEndBreak_var,
+                            thisBreakStart >= (_brk_start + _duration),
+                        )
+                        model.add_constraint(
+                            _check_break
+                            == model.logical_or(
+                                _checkStartBreak_var, _checkEndBreak_var
+                            )  # # logicOR to check OUTside breakRange
+                        )
+                        workingCheckList.append(_check_break)
+
+                    workingCheckList.append(
+                        model.shift_assignment_vars[thisShiftKey])
+                    workingCheckList.append(
+                        model.shift_assignment_vars[otherShiftKey])
+
+                    model.add_equivalence(
+                        shiftCheckingVar, model.logical_and(
+                            *workingCheckList) == 1
+                    )
+
+                    breakStartCheckingVarList.append(shiftCheckingVar)
+
+                model.add_constraint(
+                    model.if_then(
+                        model.break_duration_vars[thisBreakKey] >= 1,
+                        model.sum(
+                            shiftStartCheckingVarList) >= minPeopleWorking,
+                    ),
+                    "3.MinPeopleWorking",
+                )
+
+        # for thisShiftKey in getShiftKeys:
+        #     ctactId, __, shft = thisShiftKey
+        #     for brk in range(0, MAX_BREAK_PER_SHIFT):
+        #         thisBreakKey = (ctactId, objtId, "{0}_br{1}".format(shft, brk))
+        #         thisBreakStart = model.break_start_vars[thisBreakKey]
+
+        #         shiftCheckingVarList = []
+        #         for otherShiftKey in getShiftKeys:
+        #             if (
+        #                 otherShiftKey[:1] == thisShiftKey[:1]
+        #             ):  # not check 2 shifts of the same day of a member
+        #                 continue
+        #             shiftCheckingVar = model.binary_var(
+        #                 "ObjectTimeCheckingVar_{0}_{1}".format(thisBreakKey, otherShiftKey)
+        #             )
+
+        #             checkStart_var = model.binary_var()
+        #             checkEnd_var = model.binary_var()
+        #             check_shift = model.binary_var()
+
+        #             model.add_equivalence(
+        #                 checkStart_var,
+        #                 model.shift_start_vars[otherShiftKey] <= thisBreakStart,
+        #             )
+        #             model.add_equivalence(
+        #                 checkEnd_var,
+        #                 thisBreakStart <= model.shift_end_vars[otherShiftKey],
+        #             )
+
+        #             model.add_constraint(
+        #                 check_shift
+        #                 == model.logical_and(
+        #                     checkEnd_var, checkStart_var
+        #                 )  # logicAND to check inside shiftRange
+        #             )
+        #             workingCheckList = [check_shift]
+        #             workingCheckList.append(model.shift_assignment_vars[thisShiftKey])
+        #             workingCheckList.append(model.shift_assignment_vars[otherShiftKey])
+
+        #             model.add_equivalence(
+        #                 shiftCheckingVar, model.logical_and(*workingCheckList) == 1
+        #             )
+
+        #             shiftCheckingVarList.append(shiftCheckingVar)
+
+        #         model.add_constraint(
+        #             model.if_then(
+        #                 model.break_duration_vars[thisBreakKey] >= 1,
+        #                 model.sum(shiftCheckingVarList) <= vacancyQuantiyRequirement - 1,
+        #             ),
+        #             "4.MinPeopleWorking",
+        #         )
 
     # model.add_constraint(
     #     len(model.members) * model.average_member_work_time
@@ -593,7 +900,7 @@ def setup_constraints(model: Model):
     #     (
     #         (model.shift_end_vars[key] - model.shift_start_vars[key])
     #         - model.sum(
-    #             model.break_allocated_vars[key[0], key[1], brk] * DEFAULT_BREAK_LENGTH
+    #             model.break_duration_vars[key[0], key[1], "{0}_br{1}".format(key[2], brk)]
     #             for brk in range(0, MAX_BREAK_PER_SHIFT)
     #         )
     #     )
@@ -604,10 +911,10 @@ def setup_constraints(model: Model):
 
 
 def setup_objective(model: Model):
-    total_members_assigment = model.sum(model.member_assignment_vars.values())
+    total_members_assigment = model.sum(model.member_assignment_vars)
     model.add_kpi(total_members_assigment, "Total selected members")
     # model.add_kpi(model.total_salary_cost, "Total salary cost")
-    total_shift_assignment = model.sum(model.shift_assignment_vars.values())
+    total_shift_assignment = model.sum(model.shift_assignment_vars)
     model.add_kpi(total_shift_assignment, "Total number of assignments")
     # model.add_kpi(model.average_member_work_time, "average work time")
 
@@ -644,7 +951,7 @@ def print_solution(model: Model):
 def solve(model: Model, **kwargs):
     # Here, we set the number of threads for CPLEX to 2 and set the time limit to 2mins.
     model.parameters.threads = 16
-    model.parameters.timelimit = 3600  # solver should not take more than that !
+    model.parameters.timelimit = 36000  # solver should not take more than that !
     sol = model.solve(log_output=True, **kwargs)
     if sol is not None:
         print("solution for a cost of {}".format(model.objective_value))
@@ -698,7 +1005,7 @@ def displayModel(model: Model):
     ]
     df_break["ShiftID"] = [
         "{0}_{1}_{2}".format(key[0], key[1], key[2])
-        for key, var in model.break_allocated_vars.items()
+        for key, var in model.break_duration_vars.items()
         if model.solution.get_value(var.name) > 0
     ]
 
@@ -710,12 +1017,12 @@ def displayModel(model: Model):
     df_break["Start"] = [
         model.num2date(model.solution.get_value(
             model.break_start_vars[key].name))
-        for key, var in model.break_allocated_vars.items()
+        for key, var in model.break_duration_vars.items()
         if model.solution.get_value(var.name) > 0
     ]
     df_break["Duration"] = [
         model.solution.get_value(var.name)
-        for key, var in model.break_allocated_vars.items()
+        for key, var in model.break_duration_vars.items()
         if model.solution.get_value(var.name) > 0
     ]
     df_shift["ObjectTimeStart"] = [
@@ -781,48 +1088,23 @@ def displayModel(model: Model):
                         1
                         for brk in range(0, MAX_BREAK_PER_SHIFT)
                         if (
-                            model.solution.get_value(
-                                model.break_allocated_vars[
-                                    (contactId, objtId, brk)
-                                ].name
-                            ) == 1
-                            and
                             moment
                             >= model.solution.get_value(
                                 model.break_start_vars[
                                     (contactId, objtId, brk)
-                                ].name
+                                ]
                             )
                             and moment
-                            < DEFAULT_BREAK_LENGTH * model.solution.get_value(
-                                model.break_allocated_vars[
-                                    (contactId, objtId, brk)
-                                ].name
-                            )
+                            < DEFAULT_BREAK_LENGTH
                             + model.solution.get_value(
                                 model.break_start_vars[
                                     (contactId, objtId, brk)
-                                ].name
+                                ]
                             )
                         )
                     )
                     == 0
                 ),
-                [[(model.solution.get_value(
-                          model.break_allocated_vars[
-                              (contactId, objtId, brk)
-                          ]
-                      ),
-                     model.solution.get_value(
-                          model.break_start_vars[
-                              (contactId, objtId, brk)
-                          ]
-                      )
-                  ) 
-                  for brk in range(0, MAX_BREAK_PER_SHIFT)
-                  ]
-                    for contactId in model.members.keys()
-                 ]
             )
 
 
