@@ -57,13 +57,13 @@ TRange = namedtuple("TRange", ["From", "To"])
 file_name = "./Data/Squirrel_Optimization.xlsx"
 excel_data_file = pd.ExcelFile(file_name)
 
-MAX_BREAK_PER_SHIFT = 2
-DEFAULT_BREAK_LENGTH = 0.5 * 60
-MIN_SHIFT_LENGTH = 4 * 60
+MAX_BREAK_PER_SHIFT = int(2.0)
+DEFAULT_BREAK_LENGTH = int(0.5 * 60)
+MIN_SHIFT_LENGTH = int(4.0 * 60)
 NUM_OBJECTTIME_PER_DAY = 12
 START_TIMES_LIST = list(t*60 for t in [5, 6, 8, 9, 13, 14, 15, 16])
-SHIFT_DURATION_LIST = list(t*60 for t in [4, 8, 10])
-
+SHIFT_DURATION_LIST = list(int(t*60) for t in [0, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10])
+SECONDARY_BREAK_TIME = int(8.0 * 60)
 
 def lookup(lst, func):
     # print("Lookup ")
@@ -224,9 +224,6 @@ def setup_variables(model: Model):
 
 def setup_constraints(model: Model):
     def getDate(x): return int(x / (24 * 60))
-    numDayOfVacancy = (
-        model.vacancy_detail.EndDate - model.vacancy_detail.StartDate
-    ).days + 1
 
     # If any partial shift of a member is assigned => this member is assigned
     for ctactId, assignmendVar in model.member_assignment_vars.items():
@@ -293,6 +290,7 @@ def setup_constraints(model: Model):
     for ctactId, objtId in model.shift_assignment_vars.keys():
         objt = model.objecttime_ids[objtId]
         varKey = (ctactId, objtId)
+
         shiftStartVar = model.shift_start_vars[(ctactId, objtId)]
         shiftEndtVar = model.shift_end_vars[(ctactId, objtId)]
 
@@ -314,7 +312,11 @@ def setup_constraints(model: Model):
         for shift_duration in SHIFT_DURATION_LIST:
             newVar = model.binary_var()
             model.add_equivalence(
-                newVar, shiftEndtVar - shiftStartVar == shift_duration
+                newVar, 
+                shiftEndtVar - shiftStartVar - model.sum(
+                    model.break_allocated_vars[(ctactId, objtId, brk)] * DEFAULT_BREAK_LENGTH
+                    for brk in range(0, MAX_BREAK_PER_SHIFT)
+                ) == shift_duration
             )
             listVar2.append(newVar)
 
@@ -387,6 +389,13 @@ def setup_constraints(model: Model):
             >= model.shift_constraints.ScheduledBreakHours.From + 1,
         )
 
+        isSecondaryBreak = model.binary_var()
+        model.add_equivalence(
+            isSecondaryBreak,
+            shiftEnd_var - shiftStart_var
+            >= SECONDARY_BREAK_TIME,
+        )
+
         for brk in range(0, MAX_BREAK_PER_SHIFT):
             brk_key = (ctactId, objtId, brk)
             model.add_constraint(
@@ -410,23 +419,29 @@ def setup_constraints(model: Model):
 
                 model.add_indicator(
                     isScheduledBreak,
-                    model.break_start_vars[brk_key] + DEFAULT_BREAK_LENGTH *
-                    model.break_allocated_vars[brk_key]
+                    model.break_allocated_vars[brk_key] * DEFAULT_BREAK_LENGTH
+                    + model.break_start_vars[brk_key]
                     <= shiftStart_var + model.shift_constraints.ScheduledBreakHours.To,
+                )
+
+                model.add_indicator(
+                    isScheduledBreak,
+                    model.break_allocated_vars[brk_key] == 0,
+                    active_value=0
                 )
             else:
                 model.add_indicator(
-                    isScheduledBreak,
+                    isSecondaryBreak,
                     model.break_start_vars[brk_key]
                     >= shiftStart_var
-                    + model.shift_constraints.ScheduledBreakHours.To,
+                    + SECONDARY_BREAK_TIME,
                 )
-
-            model.add_indicator(
-                isScheduledBreak,
-                model.break_allocated_vars[brk_key] == 0,
-                active_value=0
-            )
+                
+                model.add_indicator(
+                    isSecondaryBreak,
+                    model.break_allocated_vars[brk_key] == 0,
+                    active_value=0
+                )
 
             if brk < MAX_BREAK_PER_SHIFT - 1:
                 next_brk_key = (ctactId, objtId, brk + 1)
@@ -568,10 +583,10 @@ def setup_constraints(model: Model):
                 "MinPeopleWorking_{0}_{1}".format(objtId, moment),
             )
 
-            model.add_constraint(
-                model.sum(check_object_times_vars) <= vacancyQuantiyRequirement,
-                "MaxObjectTime_{0}_{1}".format(objtId, moment),
-            )
+            # model.add_constraint(
+            #     model.sum(check_object_times_vars) <= vacancyQuantiyRequirement,
+            #     "MaxObjectTime_{0}_{1}".format(objtId, moment),
+            # )
 
     # model.add_constraint(
     #     len(model.members) * model.average_member_work_time
@@ -604,10 +619,12 @@ def setup_constraints(model: Model):
 
 
 def setup_objective(model: Model):
-    total_members_assigment = model.sum(model.member_assignment_vars.values())
+    total_members_assigment = model.sum(
+        [mem for mem in model.member_assignment_vars.values()])
     model.add_kpi(total_members_assigment, "Total selected members")
     # model.add_kpi(model.total_salary_cost, "Total salary cost")
-    total_shift_assignment = model.sum(model.shift_assignment_vars.values())
+    total_shift_assignment = model.sum(
+        [shift for shift in model.shift_assignment_vars.values()])
     model.add_kpi(total_shift_assignment, "Total number of assignments")
     # model.add_kpi(model.average_member_work_time, "average work time")
 
@@ -757,7 +774,7 @@ def displayModel(model: Model):
                     if model.solution.get_value(
                         model.shift_assignment_vars[(
                             contactId, objtId)].name
-                    )
+                    ) == 1
                     and moment
                     >= model.solution.get_value(
                         model.shift_start_vars[(contactId, objtId)].name
@@ -808,21 +825,6 @@ def displayModel(model: Model):
                     )
                     == 0
                 ),
-                [[(model.solution.get_value(
-                          model.break_allocated_vars[
-                              (contactId, objtId, brk)
-                          ]
-                      ),
-                     model.solution.get_value(
-                          model.break_start_vars[
-                              (contactId, objtId, brk)
-                          ]
-                      )
-                  ) 
-                  for brk in range(0, MAX_BREAK_PER_SHIFT)
-                  ]
-                    for contactId in model.members.keys()
-                 ]
             )
 
 
