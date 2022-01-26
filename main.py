@@ -57,14 +57,16 @@ TRange = namedtuple("TRange", ["From", "To"])
 file_name = "./Data/Squirrel_Optimization.xlsx"
 excel_data_file = pd.ExcelFile(file_name)
 
+PERIOD_MINUTE = 15
+
 MAX_BREAK_PER_SHIFT = 2
+NUM_OBJECTTIME_PER_DAY = 12
+
 DEFAULT_BREAK_LENGTH = int(0.5 * 60)
 MIN_SHIFT_LENGTH = int(4.0 * 60)
-NUM_OBJECTTIME_PER_DAY = 12
-START_TIMES_LIST = list(t*60 for t in [5, 6, 8, 9, 13, 14, 15, 16])
-SHIFT_DURATION_LIST = list(
-    int(t*60) for t in ([0, 4] + [4+i/4 for i in range(1,25)]))
 SECONDARY_BREAK_TIME = int(8.0 * 60)
+
+START_TIMES_LIST = list(t*60 for t in [5, 6, 8, 9, 13, 14, 15, 16])
 
 
 def lookup(lst, func):
@@ -137,7 +139,7 @@ def load_data(model, excel, verbose):
     SHIFT_CONSTRAINTS = TShiftConstraints(
         *tuple(
             [
-                i if i != "04:00 to 06:00" else TRange(4 * 60, 7 * 60)
+                i if i != "04:00 to 06:00" else TRange(4 * 60, 6 * 60)
                 for i in df_shift_constraints["Value"].tolist()
             ]
         )
@@ -153,11 +155,16 @@ def load_data(model, excel, verbose):
     model.vacancy_detail = VACANCY_DETAIL
 
 
+def check_satisfied(timeAvai: TMemberAvailability, objt: TVacancyObjectTime):
+    check_time = timeAvai.TimeFrom <= objt.DateFrom and objt.DateTo <= timeAvai.TimeTo
+    return check_time
+
+
 def setup_data(model: Model):
     model.members = {m.ContactID: m for m in model.member_measurement}
     lst = list(set(model.objecttimes))
     lst.sort(key=lambda x: x.DateFrom)
-    model.objecttime_ids = {i: o for i, o in enumerate(lst[:1])}
+    model.objecttime_ids = {i: o for i, o in enumerate(lst[0:1])}
 
 
 def setup_variables(model: Model):
@@ -289,6 +296,9 @@ def setup_constraints(model: Model):
     #         )
 
     # Heuristics
+    SHIFT_DURATION_LIST = list(
+        int(t*60) for t in ([0, 4] + [4+i/float(60/PERIOD_MINUTE) for i in range(1, int(6*float(60/PERIOD_MINUTE))+1)])
+    )
     for ctactId, objtId in model.shift_assignment_vars.keys():
         objt = model.objecttime_ids[objtId]
         varKey = (ctactId, objtId)
@@ -387,6 +397,23 @@ def setup_constraints(model: Model):
 
         for brk in range(0, MAX_BREAK_PER_SHIFT):
             brk_key = (ctactId, objtId, brk)
+
+            k = []
+            for moment in range(
+                int(objt.DateFrom), int(objt.DateTo) -
+                    DEFAULT_BREAK_LENGTH + 1, PERIOD_MINUTE
+            ):
+                newVar = model.binary_var()
+                model.add_equivalence(
+                    newVar,
+                    model.break_start_vars[brk_key] == moment
+                )
+                k.append(newVar)
+
+            model.add_constraint(
+                model.sums(*k) == 1
+            )
+
             model.add_constraint(
                 model.break_start_vars[brk_key] >= shiftStart_var,
                 "Break.Start>=Shift.Start",
@@ -441,43 +468,51 @@ def setup_constraints(model: Model):
                     "Break.Start+Duration<=NextBreak.Start",
                 )
 
-        # timeAvailability = lookup(
-        #     model.availabilities,
-        #     lambda i: (ctactId == i.ContactID)
-        #     and getDate((i.TimeFrom + i.TimeTo) / 2)
-        #     == getDate((objt.DateFrom + objt.DateTo) / 2),
-        # )
+        timeAvai = lookup(
+            model.availabilities,
+            lambda avail: (ctactId == avail.ContactID)
+            and getDate((avail.TimeFrom + avail.TimeTo) / 2)
+            == getDate((objt.DateFrom + objt.DateTo) / 2),
+        )
 
-        # # print(shiftStart_var,timeAvailability)
-        # if timeAvailability:
-        #     "If this member is availabilities for this objecttime"
-        #     # Set range for shift_end according to member Availability
-        #     model.add_constraint(
-        #         shiftStart_var >= timeAvailability.TimeFrom,
-        #         "Shift.Start>=Availability.Start",
-        #     )
+        # print(shiftStart_var,timeAvai)
+        if timeAvai:
+            "If this member is availabilities for this objecttime"
+            # Set range for shift_end according to member Availability
+            model.add_constraint(
+                shiftStart_var >= timeAvai.TimeFrom,
+                "Shift.Start>=Availability.Start",
+            )
 
-        #     # Set range for shift_end according to member Availability
-        #     model.add_constraint(
-        #         shiftEnd_var <= timeAvailability.TimeTo,
-        #         "Shift.End<=Availability.End",
-        #     )
-        # else:
-        #     "If a shift_var of a member who is not availabe -> Start == End"
-        #     model.add_constraint(
-        #         shiftStart_var == shiftEnd_var, "ShiftStart==ShiftEnd",
-        #     )
-        #     model.add_constraint(model.shift_assignment_vars[varKey] == 0
+            # Set range for shift_end according to member Availability
+            model.add_constraint(
+                shiftEnd_var <= timeAvai.TimeTo,
+                "Shift.End<=Availability.End",
+            )
 
+            # HEURISTICS
+            if check_satisfied(timeAvai, objt):
+                model.add_constraint(model.shift_assignment_vars[varKey] == 1)
+                model.add_constraint(
+                    shiftEndtVar - shiftStartVar - model.sum(
+                        model.break_allocated_vars[(
+                            ctactId, objtId, brk)] * DEFAULT_BREAK_LENGTH
+                        for brk in range(0, MAX_BREAK_PER_SHIFT)
+                    ) == SHIFT_DURATION_LIST[-1]
+                )
+
+        else:
+            "If a shift_var of a member who is not availabe -> Start == End"
+            model.add_constraint(model.shift_assignment_vars[varKey] == 0)
     # CONSTRAINT: MAKE SURE THERE ARE ALWAYS 'Minimum People Working' AT ANY MOMENT
     minPeopleWorking = model.shift_constraints.MinPeopleWorking
     vacancyQuantiyRequirement = model.vacancy_detail.Quantity
     vacancyQuantiyRequirement = 12
-    minPeopleWorking = 9
+    minPeopleWorking = 5
     for objtId, objt in tqdm(model.objecttime_ids.items()):
         # check for every moment with offset = 30min
         for moment in range(
-            int(objt.DateFrom), int(objt.DateTo) + 1, 15
+            int(objt.DateFrom), int(objt.DateTo) + 1, PERIOD_MINUTE
         ):  # include objt.DateTo
             # this var_list is to check if each member is working or not at this moment
             check_mem_isworking_vars = []
@@ -524,7 +559,8 @@ def setup_constraints(model: Model):
                 for brk in range(0, MAX_BREAK_PER_SHIFT):
                     _key = (contactId, objtId, brk)
                     _brk_start = model.break_start_vars[_key]
-                    _duration = model.break_allocated_vars[_key] * DEFAULT_BREAK_LENGTH
+                    _duration = model.break_allocated_vars[_key] * \
+                        DEFAULT_BREAK_LENGTH
                     _check_break = model.binary_var()
                     _checkStart_var = model.binary_var()
                     _checkEnd_var = model.binary_var()
