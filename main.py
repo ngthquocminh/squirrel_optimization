@@ -57,13 +57,15 @@ TRange = namedtuple("TRange", ["From", "To"])
 file_name = "./Data/Squirrel_Optimization.xlsx"
 excel_data_file = pd.ExcelFile(file_name)
 
-MAX_BREAK_PER_SHIFT = int(2.0)
+MAX_BREAK_PER_SHIFT = 2
 DEFAULT_BREAK_LENGTH = int(0.5 * 60)
 MIN_SHIFT_LENGTH = int(4.0 * 60)
 NUM_OBJECTTIME_PER_DAY = 12
 START_TIMES_LIST = list(t*60 for t in [5, 6, 8, 9, 13, 14, 15, 16])
-SHIFT_DURATION_LIST = list(int(t*60) for t in [0, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10])
+SHIFT_DURATION_LIST = list(
+    int(t*60) for t in ([0, 4] + [4+i/4 for i in range(1,25)]))
 SECONDARY_BREAK_TIME = int(8.0 * 60)
+
 
 def lookup(lst, func):
     # print("Lookup ")
@@ -146,7 +148,7 @@ def load_data(model, excel, verbose):
     model.objecttimes = VACANCY_OBJECTTIME
     model.worksite_refs = MEM_WORKSITE_REFERENCE
     model.shift_refs = MEM_SHIFT_REFERENCE
-    model.member_measurement = MEM_MEASUREMENT[:25]
+    model.member_measurement = MEM_MEASUREMENT[:]
     model.shift_constraints = SHIFT_CONSTRAINTS
     model.vacancy_detail = VACANCY_DETAIL
 
@@ -312,9 +314,10 @@ def setup_constraints(model: Model):
         for shift_duration in SHIFT_DURATION_LIST:
             newVar = model.binary_var()
             model.add_equivalence(
-                newVar, 
+                newVar,
                 shiftEndtVar - shiftStartVar - model.sum(
-                    model.break_allocated_vars[(ctactId, objtId, brk)] * DEFAULT_BREAK_LENGTH
+                    model.break_allocated_vars[(
+                        ctactId, objtId, brk)] * DEFAULT_BREAK_LENGTH
                     for brk in range(0, MAX_BREAK_PER_SHIFT)
                 ) == shift_duration
             )
@@ -382,20 +385,6 @@ def setup_constraints(model: Model):
             name="ShiftAssignment",
         )
 
-        isScheduledBreak = model.binary_var()
-        model.add_equivalence(
-            isScheduledBreak,
-            shiftEnd_var - shiftStart_var
-            >= model.shift_constraints.ScheduledBreakHours.From + 1,
-        )
-
-        isSecondaryBreak = model.binary_var()
-        model.add_equivalence(
-            isSecondaryBreak,
-            shiftEnd_var - shiftStart_var
-            >= SECONDARY_BREAK_TIME,
-        )
-
         for brk in range(0, MAX_BREAK_PER_SHIFT):
             brk_key = (ctactId, objtId, brk)
             model.add_constraint(
@@ -410,37 +399,37 @@ def setup_constraints(model: Model):
             )
 
             if brk == 0:
+                model.add_equivalence(
+                    model.break_allocated_vars[brk_key],
+                    shiftEnd_var - shiftStart_var
+                    >= model.shift_constraints.ScheduledBreakHours.From + 1,
+                )
+
                 model.add_indicator(
-                    isScheduledBreak,
+                    model.break_allocated_vars[brk_key],
                     model.break_start_vars[brk_key]
                     >= shiftStart_var
                     + model.shift_constraints.ScheduledBreakHours.From,
                 )
 
                 model.add_indicator(
-                    isScheduledBreak,
+                    model.break_allocated_vars[brk_key],
                     model.break_allocated_vars[brk_key] * DEFAULT_BREAK_LENGTH
                     + model.break_start_vars[brk_key]
                     <= shiftStart_var + model.shift_constraints.ScheduledBreakHours.To,
                 )
+            else:
+                model.add_if_then(
+                    shiftEnd_var - shiftStart_var
+                    <= SECONDARY_BREAK_TIME - 1,
+                    model.break_allocated_vars[brk_key] == 0
+                )
 
                 model.add_indicator(
-                    isScheduledBreak,
-                    model.break_allocated_vars[brk_key] == 0,
-                    active_value=0
-                )
-            else:
-                model.add_indicator(
-                    isSecondaryBreak,
+                    model.break_allocated_vars[brk_key],
                     model.break_start_vars[brk_key]
                     >= shiftStart_var
                     + SECONDARY_BREAK_TIME,
-                )
-                
-                model.add_indicator(
-                    isSecondaryBreak,
-                    model.break_allocated_vars[brk_key] == 0,
-                    active_value=0
                 )
 
             if brk < MAX_BREAK_PER_SHIFT - 1:
@@ -484,7 +473,7 @@ def setup_constraints(model: Model):
     minPeopleWorking = model.shift_constraints.MinPeopleWorking
     vacancyQuantiyRequirement = model.vacancy_detail.Quantity
     vacancyQuantiyRequirement = 12
-    minPeopleWorking = 5
+    minPeopleWorking = 9
     for objtId, objt in tqdm(model.objecttime_ids.items()):
         # check for every moment with offset = 30min
         for moment in range(
@@ -513,14 +502,14 @@ def setup_constraints(model: Model):
                 check_shift = model.binary_var()
 
                 # moment must be insite shift-range
-                model.add_constraint(
-                    model.equivalence_constraint(
-                        checkStart_var, start <= moment)
+                model.add_equivalence(
+                    checkStart_var, start <= moment
                 )
 
-                model.add_constraint(
-                    model.equivalence_constraint(
-                        checkEnd_var, (moment == end) if moment == objt.DateTo else (moment <= end - 1))
+                model.add_equivalence(
+                    checkEnd_var,
+                    (moment == end) if moment == objt.DateTo else (
+                        moment <= end - 1)
                 )
 
                 model.add_constraint(
@@ -535,7 +524,7 @@ def setup_constraints(model: Model):
                 for brk in range(0, MAX_BREAK_PER_SHIFT):
                     _key = (contactId, objtId, brk)
                     _brk_start = model.break_start_vars[_key]
-                    _duration = model.break_allocated_vars[_key]
+                    _duration = model.break_allocated_vars[_key] * DEFAULT_BREAK_LENGTH
                     _check_break = model.binary_var()
                     _checkStart_var = model.binary_var()
                     _checkEnd_var = model.binary_var()
@@ -583,10 +572,10 @@ def setup_constraints(model: Model):
                 "MinPeopleWorking_{0}_{1}".format(objtId, moment),
             )
 
-            # model.add_constraint(
-            #     model.sum(check_object_times_vars) <= vacancyQuantiyRequirement,
-            #     "MaxObjectTime_{0}_{1}".format(objtId, moment),
-            # )
+            model.add_constraint(
+                model.sum(check_object_times_vars) <= vacancyQuantiyRequirement,
+                "MaxObjectTime_{0}_{1}".format(objtId, moment),
+            )
 
     # model.add_constraint(
     #     len(model.members) * model.average_member_work_time
