@@ -15,11 +15,12 @@ from functools import reduce
 import numpy as np
 
 TShift = namedtuple("TShift", ["name", "start_hour", "end_hour",
-                                "num_breaks","hours","var","work_indicator"])
+                                "num_breaks","hours","var"])
 TBreak = namedtuple(
     "TBreak", ["start_hour","end_hour"])
 TPeriod = namedtuple(
-    "TPeriod", ["ContactID","shift","period_start","period_end","work_indicator"])
+    "TPeriod", ["ContactID","shift","period_start","period_end","work_indicator","break1_indicator",
+                "break2_indicator"])
 TTeamMemberInfo = namedtuple("TTeamMemberInfo", ["contactid", "gradeid", "ebaid",
                                                  "employment_typeid", "availability", "roster"])
 TVar = namedtuple("TVariable", ["ContactID", "time_period",
@@ -66,7 +67,7 @@ TShiftConstraints = namedtuple(
 )
 TRange = namedtuple("TRange", ["From", "To"])
 
-file_name = "./Data/Squirrel_Optimization.xlsx"
+file_name = "Squirrel_Optimization.xlsx"
 excel_data_file = pd.ExcelFile(file_name)
 
 MAX_BREAK_PER_SHIFT = 4
@@ -74,6 +75,8 @@ DEFAULT_BREAK_LENGTH = 0.5 * 60
 MIN_SHIFT_LENGTH = 4 * 60
 NUM_OBJECTTIME_PER_DAY = 12
 
+VAR=[]
+periods=[]
 
 def lookup(lst, func):
     # print("Lookup ")
@@ -84,7 +87,7 @@ def lookup(lst, func):
             return i
         
 
-def load_data(model, excel, verbose):
+def load_data(model, excel):
 
     df_vacancy_detail = excel.parse("Vacancy")
     df_vacancy_objectTime = excel.parse("Vacancy Object Time")
@@ -109,6 +112,7 @@ def load_data(model, excel, verbose):
     df_vacancy_objectTime.loc[:, "DateTo"] = list(
         map(date2num, df_vacancy_objectTime["DateTo"])
     )
+    model.vacancy_objectTime = df_vacancy_objectTime
     df_teamMember_availability.loc[:, "TimeFrom"] = list(
         map(date2num, df_teamMember_availability["TimeFrom"])
     )
@@ -144,7 +148,7 @@ def load_data(model, excel, verbose):
     SHIFT_CONSTRAINTS = TShiftConstraints(
         *tuple(
             [
-                i if i != "04:00 to 06:00" else TRange(4 * 60, 6 * 60)
+                i if i != "04:00 to 06:00" else TRange(4 * 60, 7 * 60)
                 for i in df_shift_constraints["Value"].tolist()
             ]
         )
@@ -155,7 +159,7 @@ def load_data(model, excel, verbose):
     model.objecttimes = VACANCY_OBJECTTIME
     model.worksite_refs = MEM_WORKSITE_REFERENCE
     model.shift_refs = MEM_SHIFT_REFERENCE
-    model.member_measurement = MEM_MEASUREMENT
+    model.member_measurement = MEM_MEASUREMENT[:11]
     model.shift_constraints = SHIFT_CONSTRAINTS
     model.vacancy_detail = VACANCY_DETAIL
     
@@ -198,15 +202,15 @@ def getshifthours(timefrom,timeto):
         if timefrom <= i[0] and timeto >= i[1]:
             return (i[0],i[1])
         
-VAR = []    
+        
 def setup_data(model):
     temp = []
-    for avail in model.availabilities[:]:
+    for avail in model.availabilities:
         avail_start,avail_end = getshifthours(avail.TimeFrom,avail.TimeTo)
         #print(avail_start,avail_end)
         shifts = create_shift(model,avail_start,avail_end)
-        temp.append((avail.ContactID,(avail_start,avail_end),shifts))
-    VAR.extend([TVar(*v) for v in temp])
+        temp = (avail.ContactID,avail,shifts)
+        VAR.append(TVar(*temp))
     return
 
 def get_shift_length(start_time,end_time):
@@ -227,7 +231,7 @@ def get_num_breaks(shift_len):
     if shift_len == 10:
         return 2
 
-def create_shift(model:Model,start_time,end_time):
+def create_shift(model,start_time,end_time):
     "creates shifts based on different starttimes and lengths based on availability"
     SHIFTS = []
     for shift_start in range(start_time,end_time):
@@ -238,10 +242,10 @@ def create_shift(model:Model,start_time,end_time):
                     shift_len_list = get_shift_length(shift_start,end_time)
                     for shift_len in shift_len_list:
                         var = model.binary_var()
-                        work_indicator = model.binary_var()
-                        SHIFTS.append(("{0} hour shift".format(4),shift_start,
+                        #work_indicator = model.binary_var()
+                        SHIFTS.append(("{0} hour shift".format(shift_len),shift_start,
                                        shift_start+shift_len,get_num_breaks(shift_len),
-                                       shift_len,var,work_indicator))
+                                       shift_len,var))
     shifts = [TShift(*rs) for rs in SHIFTS]
     return shifts
            
@@ -255,119 +259,124 @@ def get_shift_periods(shift_len):
         return 5
 
              
-def setup_variables(model:Model):
+def setup_variables(model):
     k = []
     for v in VAR:
         for sh in v.shift:
             num_periods = get_shift_periods(sh.hours)
             for period in range(num_periods):
-                p_start = model.integer_var()
-                p_end = model.integer_var()
-                k.append((v.ContactID,sh,p_start,p_end,sh.work_indicator))
-    model.periods = [TPeriod(*p) for p in k]
+                work_indicator = model.binary_var()
+                break1_indicator = model.binary_var()
+                break2_indicator = model.binary_var()
+                p_start = model.continuous_var()
+                p_end = model.continuous_var()
+                k = (v.ContactID,sh,p_start,p_end,work_indicator,break1_indicator,break2_indicator)
+                periods.append(TPeriod(*k))
     return 
 
-def setup_constraints(model:Model):                    
+def setup_constraints(model):                    
     
     for v in VAR:
         shifts = v.shift
         model.add_constraint(model.sum(shift.var for shift in shifts) <= 1)
         for sh in v.shift:
-            total_break_time = sh.num_breaks*DEFAULT_BREAK_LENGTH
-            total_work_time = sh.hours - total_break_time
-            work_indicator = sh.work_indicator
-            model.add_constraint(work_indicator<=sh.var)
-            for t in range(sh.hours):
-                if t <= 4:
-                    model.add_constraint(work_indicator == sh.var)
-                if t in range(6,9):
-                    model.add_constraint(work_indicator == sh.var)
-            period = [p for p in model.periods if p.shift == sh]
-            if sh.hours != 4:
-                for p in period:
-                    model.add_indicator(work_indicator, p.period_end - p.period_start == 0.5, 0)
-            model.add_indicator(work_indicator,model.sum(p.period_end - p.period_start for p in period)
-                                == total_work_time, 1)
-            model.add_indicator(work_indicator,model.sum(p.period_end - p.period_start for p in period)
-                                == total_break_time, 0)
-        
+            periods_shift = [p for p in periods if p.ContactID == v.ContactID and 
+                             p.shift == sh]
+            #Break indicator constraints based on shift hours
+            if sh.hours == 4:
+                model.add_constraint(model.sum(p.break1_indicator for p in periods_shift) == 0*sh.var)
+                model.add_constraint(model.sum(p.break2_indicator for p in periods_shift) == 0*sh.var)
+            if sh.hours == 8:
+                model.add_constraint(model.sum(p.break1_indicator for p in periods_shift) == 1*sh.var)
+                model.add_constraint(model.sum(p.break2_indicator for p in periods_shift) == 0*sh.var)
+            if sh.hours == 10:
+                model.add_constraint(model.sum(p.break1_indicator for p in periods_shift) == 1*sh.var)
+                model.add_constraint(model.sum(p.break2_indicator for p in periods_shift) == 1*sh.var)
+                
+            for period in periods_shift:
+                #period end > period start constraint
+                model.add_constraint(period.period_end >= period.period_start)
+                #period bound constraints
+                model.add_constraint(period.period_start >= sh.start_hour*sh.var)
+                model.add_constraint(period.period_start <= sh.end_hour*sh.var)
+                model.add_constraint(period.period_end >= sh.start_hour*sh.var)
+                model.add_constraint(period.period_end <= sh.end_hour*sh.var)
+                #Indicator bound constraints
+                model.add_constraint(period.work_indicator <= sh.var)
+                model.add_constraint(period.break1_indicator <= sh.var)
+                model.add_constraint(period.break2_indicator <= sh.var)
+                model.add_constraint(period.work_indicator + period.break1_indicator + period.break2_indicator
+                                      == sh.var)
+                #Workhour and breakhour constraints
+                model.add_indicator(period.break1_indicator,period.period_end - sh.var*sh.start_hour <= 4*sh.var,0)
+                model.add_indicator(period.break1_indicator,period.period_end - sh.var*sh.start_hour >= 6*sh.var,0)
+                model.add_indicator(period.break2_indicator,period.period_end - sh.var*sh.start_hour <= 8*sh.var,0)
+                model.add_indicator(period.break1_indicator,period.period_end - period.period_start == 0.5,1)
+                model.add_indicator(period.break2_indicator,period.period_end - period.period_start == 0.5,1)
+            
+            #Applying totalhours constraint
+            model.add_constraint(model.sum(p.period_end - p.period_start for p in periods_shift) == sh.hours*sh.var)
+
+            #Applying non overlapping periods constraint
+            for i in range(len(periods_shift)-1):
+                model.add_constraint(periods_shift[i].period_end == periods_shift[i+1].period_start)
+                
+            #Constraint setting start and end time for periods
+            model.add_constraint(periods_shift[0].period_start == sh.start_hour*sh.var)
+            model.add_constraint(periods_shift[len(periods_shift)-1].period_end == sh.end_hour*sh.var)
             
     print("Finished allocating breaks constraint")
-    minPeopleWorking = model.shift_constraints.MinPeopleWorking
-    vacancyQuantiyRequirement = model.vacancy_detail.Quantity
-    vacancyQuantiyRequirement = 12
-    minPeopleWorking = 5
-    for objtId, objt in tqdm(model.objecttime_ids.items()):
-        # check for every moment with offset = 30min
-        for moment in range(
-            int(objt.DateFrom), int(objt.DateTo) + 1, 15
-        ): 
-            var_list = [p for p in model.periods if moment in range(p.shift.start_hour,p.shift.end_hour)]
-            on_floor_var = model.sum()
+    
+    df_vacancies = model.vacancy_objectTime.groupby(['DateFrom','DateTo']).size().reset_index(name='Count')
+    for _,row in df_vacancies.iterrows():
+        for h in np.arange(row['DateFrom'],row['DateTo'],0.25):
+            var_list = [p for p in periods if p.shift.start_hour <= h <=p.shift.end_hour]
+            print(len(var_list))
+            on_floor_var = model.sum(p.work_indicator for p in var_list)
+            model.add_constraint(on_floor_var >= 5,"Minimum 5 members on floor at any time")
+            model.add_constraint(on_floor_var <= 12,"Max 12 members on floor at any time")
 
     print("Added vacancy filling constraints")
     
-def setup_objective(model: Model):
+    
+def parameter_set_with_timelimit(cplex, limit):
+    ps = cplex.create_parameter_set()
+    ps.add(cplex.parameters.timelimit, limit[0])
+    ps.add(cplex.parameters.preprocessing.aggregator, limit[1])
+    ps.add(cplex.parameters.mip.polishafter.solutions, limit[2])
+    ps.add(cplex.parameters.mip.tolerances.mipgap, 0.1)
+    return ps
 
-    return
-                        
-        
-def print_information(model: Model):
-    print("#member=%d" % len(model.availabilities))
-    model.print_information()
-    model.report_kpis()
+def setup_objectives(model):
+    model.total_shifts = model.sum(p.shift.var for p in periods)
+    model.add_kpi(model.total_shifts,"Total shifts assigned")
+    return 
 
-
-def print_solution(model: Model):
-    print("*************************** Solution ***************************")
-
-
-def solve(model: Model, **kwargs):
-    # Here, we set the number of threads for CPLEX to 2 and set the time limit to 2mins.
-    model.parameters.threads = 16
-    model.parameters.timelimit = 3600  # solver should not take more than that !
-    sol = model.solve(log_output=True, **kwargs)
-    if sol is not None:
-        print("solution for a cost of {}".format(model.objective_value))
-        print_information(model)
-        print_solution(model)
-        return model.objective_value
-    else:
-        print("* model is infeasible")
-        return None
-
-
-def build(context=None, verbose=False, **kwargs):
-    mdl = Model("Members", context=context, **kwargs)
-    print("Loading data")
-    load_data(mdl, excel_data_file, verbose=verbose)
-    print("Setting up data")
+def build():
+    mdl = Model()
+    load_data(mdl,excel_data_file)
     setup_data(mdl)
-    print("Setting up variable")
+    print("Done setting up data")
     setup_variables(mdl)
-    print("Setting up constraint")
+    print("Done setting up variables")
     setup_constraints(mdl)
-    print("Setting up objectives")
-    setup_objective(mdl)
+    print("Done setting up constriants")
+    setup_objectives(mdl)
+    print("Done setting up objectives")
+    
     return mdl
 
+if __name__ == '__main__':
+    import time
 
-def displayModel(model: Model):
-    ""
-
-
-# ----------------------------------------------------------------------------
-# Solve the model and display the result
-# ----------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    # Build model
+    start_time = time.time()
     model = build()
+    solve=model.solve()
+    if solve:
+        model.report_kpis()
+        
 
-    # Solve the model and print solution
-    solve(model)
-
-    # Save the CPLEX solution as "solution.json" program output
-    with get_environment().get_output_stream("solution.json") as fp:
-        model.solution.export(fp, "json")
-    displayModel(model)
+                        
+        
+        
+        
