@@ -233,6 +233,13 @@ def setup_variables(model: Model):
 
 def setup_constraints(model: Model):
     def getDate(x): return int(x / (24 * 60))
+    minPeopleWorking = model.shift_constraints.MinPeopleWorking
+    vacancyQuantiyRequirement = model.vacancy_detail.Quantity
+    vacancyQuantiyRequirement = 12
+    minPeopleWorking = 8
+    SHIFT_DURATION_LIST = list(
+        int(t*60) for t in ([0, 4] + [4+i/float(60/PERIOD_MINUTE) for i in range(1, int(6*float(60/PERIOD_MINUTE))+1)])
+    )
 
     # If any partial shift of a member is assigned => this member is assigned
     for ctactId, assignmendVar in model.member_assignment_vars.items():
@@ -296,9 +303,7 @@ def setup_constraints(model: Model):
     #         )
 
     # Heuristics
-    SHIFT_DURATION_LIST = list(
-        int(t*60) for t in ([0, 4] + [4+i/float(60/PERIOD_MINUTE) for i in range(1, int(6*float(60/PERIOD_MINUTE))+1)])
-    )
+
     for ctactId, objtId in model.shift_assignment_vars.keys():
         objt = model.objecttime_ids[objtId]
         varKey = (ctactId, objtId)
@@ -467,6 +472,14 @@ def setup_constraints(model: Model):
                     <= model.break_start_vars[next_brk_key],
                     "Break.Start+Duration<=NextBreak.Start",
                 )
+                
+    # Check Availability
+    heuristic_check_num = 0
+    for ctactId, objtId in model.shift_assignment_vars.keys():
+        objt = model.objecttime_ids[objtId]
+        varKey = (ctactId, objtId)
+        shiftStart_var = model.shift_start_vars[varKey]
+        shiftEnd_var = model.shift_end_vars[varKey]
 
         timeAvai = lookup(
             model.availabilities,
@@ -478,37 +491,38 @@ def setup_constraints(model: Model):
         # print(shiftStart_var,timeAvai)
         if timeAvai:
             "If this member is availabilities for this objecttime"
-            # Set range for shift_end according to member Availability
-            model.add_constraint(
-                shiftStart_var >= timeAvai.TimeFrom,
-                "Shift.Start>=Availability.Start",
-            )
-
-            # Set range for shift_end according to member Availability
-            model.add_constraint(
-                shiftEnd_var <= timeAvai.TimeTo,
-                "Shift.End<=Availability.End",
-            )
-
+            print("+",ctactId)
             # HEURISTICS
-            if check_satisfied(timeAvai, objt):
+            if check_satisfied(timeAvai, objt) and heuristic_check_num <= vacancyQuantiyRequirement:
+                heuristic_check_num += 1
                 model.add_constraint(model.shift_assignment_vars[varKey] == 1)
+                # model.add_constraint(
+                #     shiftEnd_var - shiftStart_var - model.sum(
+                #         model.break_allocated_vars[(
+                #             ctactId, objtId, brk)] * DEFAULT_BREAK_LENGTH
+                #         for brk in range(0, MAX_BREAK_PER_SHIFT)
+                #     ) == SHIFT_DURATION_LIST[-1]
+                # )
+            else:
+                # Set range for shift_end according to member Availability
                 model.add_constraint(
-                    shiftEndtVar - shiftStartVar - model.sum(
-                        model.break_allocated_vars[(
-                            ctactId, objtId, brk)] * DEFAULT_BREAK_LENGTH
-                        for brk in range(0, MAX_BREAK_PER_SHIFT)
-                    ) == SHIFT_DURATION_LIST[-1]
+                    shiftStart_var >= timeAvai.TimeFrom,
+                    "Shift.Start>=Availability.Start",
+                )
+
+                # Set range for shift_end according to member Availability
+                model.add_constraint(
+                    shiftEnd_var <= timeAvai.TimeTo,
+                    "Shift.End<=Availability.End",
                 )
 
         else:
-            "If a shift_var of a member who is not availabe -> Start == End"
+            print("-",ctactId)
+            "If a shift_var of a member who is not availabe -> Start == Exnd"
             model.add_constraint(model.shift_assignment_vars[varKey] == 0)
+
+    print("heuristic_check_num", heuristic_check_num)
     # CONSTRAINT: MAKE SURE THERE ARE ALWAYS 'Minimum People Working' AT ANY MOMENT
-    minPeopleWorking = model.shift_constraints.MinPeopleWorking
-    vacancyQuantiyRequirement = model.vacancy_detail.Quantity
-    vacancyQuantiyRequirement = 12
-    minPeopleWorking = 5
     for objtId, objt in tqdm(model.objecttime_ids.items()):
         # check for every moment with offset = 30min
         for moment in range(
@@ -664,12 +678,12 @@ def setup_objective(model: Model):
     # total_fairness = total_over_average_worktime + total_under_average_worktime
     # model.add_kpi(total_fairness, "Total fairness")
 
-    model.minimize(
-        total_members_assigment
+    # model.minimize(
+        # total_members_assigment
         #     model.total_salary_cost
         #     + total_fairness
         # + total_shift_assignment
-    )
+    # )
     return
 
 
