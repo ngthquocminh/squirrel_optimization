@@ -92,6 +92,7 @@ def load_data(model, excel, verbose):
     anchor_date = df_vacancy_detail["StartDate"][0]
     # print(anchor_date)
     def date2num(dt): return int((dt - anchor_date).total_seconds() / 60)
+    
     model.num2date = lambda n: anchor_date + datetime.timedelta(
         days=int(n / (60 * 24)), hours=int((n % (60 * 24))) / 60
     )
@@ -164,7 +165,7 @@ def setup_data(model: Model):
     model.members = {m.ContactID: m for m in model.member_measurement}
     lst = list(set(model.objecttimes))
     lst.sort(key=lambda x: x.DateFrom)
-    model.objecttime_ids = {i: o for i, o in enumerate(lst[3:4])}
+    model.objecttime_ids = {i: o for i, o in enumerate(lst[2:4])}
 
 
 def setup_variables(model: Model):
@@ -181,7 +182,7 @@ def setup_variables(model: Model):
         keys2=model.objecttime_ids.keys(),
         name="ShiftAssignment"
     )
-    
+
     # print(model.shift_assignment_vars, "\n")
 
     # ShiftStart_contactId_objectId_shift
@@ -241,7 +242,7 @@ def setup_constraints(model: Model):
     SHIFT_DURATION_LIST = list(
         int(t*60) for t in ([0, 4] + [4+i/float(60/PERIOD_MINUTE) for i in range(1, int(6*float(60/PERIOD_MINUTE))+1)])
     )
-    print(model.num2date(model.objecttime_ids[0].DateFrom))
+    # print(model.num2date(model.objecttime_ids[0].DateFrom))
     # If any partial shift of a member is assigned => this member is assigned
     for ctactId, assignmendVar in model.member_assignment_vars.items():
         lstShift = [
@@ -303,28 +304,13 @@ def setup_constraints(model: Model):
     #             "LimitConsecutiveWorkedDays",
     #         )
 
-    # Heuristics
-
+    # Heuristics for shift duration
     for ctactId, objtId in model.shift_assignment_vars.keys():
         objt = model.objecttime_ids[objtId]
         varKey = (ctactId, objtId)
 
         shiftStartVar = model.shift_start_vars[(ctactId, objtId)]
         shiftEndtVar = model.shift_end_vars[(ctactId, objtId)]
-
-        listVar1 = []
-        for start_time in START_TIMES_LIST:
-            start_time = getDate(objt.DateFrom) * 24 * 60 + start_time
-            newVar = model.binary_var()
-            model.add_equivalence(
-                newVar, shiftStartVar == start_time
-            )
-            listVar1.append(newVar)
-
-        model.add_constraint(
-            model.sums(*listVar1) == 1
-        )
-        del listVar1
 
         listVar2 = []
         for shift_duration in SHIFT_DURATION_LIST:
@@ -339,7 +325,8 @@ def setup_constraints(model: Model):
             )
             listVar2.append(newVar)
 
-        model.add_constraint(
+        model.add_indicator(
+            model.shift_assignment_vars[varKey],
             model.sums(*listVar2) == 1
         )
 
@@ -373,29 +360,34 @@ def setup_constraints(model: Model):
     for ctactId, objtId in model.shift_assignment_vars.keys():
         objt = model.objecttime_ids[objtId]
         varKey = (ctactId, objtId)
+        shiftAssignment_var = model.shift_assignment_vars[varKey]
         shiftStart_var = model.shift_start_vars[varKey]
         shiftEnd_var = model.shift_end_vars[varKey]
 
         # Set range for shift_start according to objectTime
-        model.add_constraint(
-            shiftStart_var >= objt.DateFrom, "Shift.Start>=Date.From",
+        model.add_indicator(
+            shiftAssignment_var,
+            shiftStart_var >= objt.DateFrom, 
+            name="Shift.Start>=Date.From",
         )
 
         # Set range for shift_end according to objectTime
-        model.add_constraint(
-            shiftEnd_var <= objt.DateTo, "Shift.End<=Date.To",
+        model.add_indicator(
+            shiftAssignment_var,
+            shiftEnd_var <= objt.DateTo,
+            name="Shift.End<=Date.To",
         )
 
         # if shift is not assigned
         model.add_equivalence(
-            model.shift_assignment_vars[varKey],
+            shiftAssignment_var,
             shiftStart_var == shiftEnd_var,
             true_value=0,
             name="ShiftAssignment",
         )
         # else
         model.add_equivalence(
-            model.shift_assignment_vars[varKey],
+            shiftAssignment_var,
             shiftEnd_var - shiftStart_var >= MIN_SHIFT_LENGTH,
             true_value=1,
             name="ShiftAssignment",
@@ -409,26 +401,31 @@ def setup_constraints(model: Model):
                 int(objt.DateFrom), int(objt.DateTo) -
                     DEFAULT_BREAK_LENGTH + 1, PERIOD_MINUTE
             ):
-                newVar = model.binary_var()
+                # print(model.num2date(moment))
+                newVar = model.binary_var(
+                    "K({0}_{1}_{2}_{3})".format(ctactId, objtId, brk, moment))
                 model.add_equivalence(
                     newVar,
                     model.break_start_vars[brk_key] == moment
                 )
                 k.append(newVar)
 
-            model.add_constraint(
+            model.add_indicator(
+                model.break_allocated_vars[brk_key],
                 model.sums(*k) == 1
             )
 
-            model.add_constraint(
+            model.add_indicator(
+                model.break_allocated_vars[brk_key],
                 model.break_start_vars[brk_key] >= shiftStart_var,
-                "Break.Start>=Shift.Start",
+                name="Break.Start>=Shift.Start",
             )
-            model.add_constraint(
-                model.break_allocated_vars[brk_key] * DEFAULT_BREAK_LENGTH +
-                model.break_start_vars[brk_key]
+            model.add_indicator(
+                model.break_allocated_vars[brk_key],
+                model.break_start_vars[brk_key] +
+                model.break_allocated_vars[brk_key] * DEFAULT_BREAK_LENGTH
                 <= shiftEnd_var,
-                "Break.Start+Duration<=Shift.End",
+                name="Break.Start+Duration<=Shift.End",
             )
 
             if brk == 0:
@@ -447,8 +444,8 @@ def setup_constraints(model: Model):
 
                 model.add_indicator(
                     model.break_allocated_vars[brk_key],
+                    model.break_start_vars[brk_key] +
                     model.break_allocated_vars[brk_key] * DEFAULT_BREAK_LENGTH
-                    + model.break_start_vars[brk_key]
                     <= shiftStart_var + model.shift_constraints.ScheduledBreakHours.To,
                 )
             else:
@@ -465,21 +462,22 @@ def setup_constraints(model: Model):
                     + SECONDARY_BREAK_TIME,
                 )
 
-            if brk < MAX_BREAK_PER_SHIFT - 1:
-                next_brk_key = (ctactId, objtId, brk + 1)
-                model.add_constraint(
-                    model.break_allocated_vars[brk_key] * DEFAULT_BREAK_LENGTH +
-                    model.break_start_vars[brk_key]
-                    <= model.break_start_vars[next_brk_key],
-                    "Break.Start+Duration<=NextBreak.Start",
-                )
-                
+            # if brk < MAX_BREAK_PER_SHIFT - 1:
+            #     next_brk_key = (ctactId, objtId, brk + 1)
+            #     model.add_constraint(
+            #         model.break_allocated_vars[brk_key] * DEFAULT_BREAK_LENGTH +
+            #         model.break_start_vars[brk_key]
+            #         <= model.break_start_vars[next_brk_key],
+            #         "Break.Start+Duration<=NextBreak.Start",
+            #     )
+
     # Check Availability
-    heuristic_check_num = {key:0 for key in model.objecttime_ids.keys()}
+    heuristic_check_num = {key: 0 for key in model.objecttime_ids.keys()}
     for ctactId, objtId in model.shift_assignment_vars.keys():
-        
+
         objt = model.objecttime_ids[objtId]
         varKey = (ctactId, objtId)
+        shiftAssignment_var = model.shift_assignment_vars[varKey]
         shiftStart_var = model.shift_start_vars[varKey]
         shiftEnd_var = model.shift_end_vars[varKey]
 
@@ -489,44 +487,81 @@ def setup_constraints(model: Model):
             and getDate((avail.TimeFrom + avail.TimeTo) / 2)
             == getDate((objt.DateFrom + objt.DateTo) / 2),
         )
-
+        
         # print(shiftStart_var,timeAvai)
         if timeAvai:
             "If this member is availabilities for this objecttime"
             # HEURISTICS
+
+            get_starttime_var_list = [
+                start_time for start_time in [(getDate(objt.DateFrom) * 24 * 60 + i) for i in START_TIMES_LIST]
+                if start_time >= objt.DateFrom and start_time >= timeAvai.TimeFrom
+                and start_time+4*60 <= objt.DateTo and start_time+4*60 <= timeAvai.TimeTo
+            ]
+            print(">> ", ctactId, get_starttime_var_list)
+            listVar1 = []
+            for start_time in get_starttime_var_list:
+                newVar = model.binary_var()
+                model.add_equivalence(
+                    newVar, shiftStart_var == start_time
+                )
+                listVar1.append(newVar)
+            if len(listVar1) > 0:
+                model.add_indicator(
+                    shiftAssignment_var,
+                    model.sums(*listVar1) == 1
+                )
+            else:
+                model.add_constraint(shiftAssignment_var == 0)
+                
+            del listVar1
             
             if check_satisfied(timeAvai, objt) and heuristic_check_num[objtId] < vacancyQuantiyRequirement:
-                print("+",ctactId, objtId)
+                # print("+", ctactId, objtId)
                 heuristic_check_num[objtId] += 1
-                model.add_constraint(model.shift_assignment_vars[varKey] == 1)
-                # model.add_constraint(
-                #     shiftEnd_var - shiftStart_var - model.sum(
-                #         model.break_allocated_vars[(
-                #             ctactId, objtId, brk)] * DEFAULT_BREAK_LENGTH
-                #         for brk in range(0, MAX_BREAK_PER_SHIFT)
-                #     ) == SHIFT_DURATION_LIST[-1]
-                # )
-            else:
-                print("=",ctactId, objtId)
-                # Set range for shift_end according to member Availability
+                model.add_constraint(shiftAssignment_var == 1)
                 model.add_constraint(
-                    shiftStart_var >= timeAvai.TimeFrom,
-                    "Shift.Start>=Availability.Start",
+                    shiftEnd_var - shiftStart_var
+                    >= 6*60
                 )
+            else:
+                # print("=", ctactId, objtId)
+                # Set range for shift_end according to member Availability
+                if timeAvai.TimeFrom <= objt.DateFrom:
+                    ""
+                    # model.add_indicator(
+                    #     shiftAssignment_var,
+                    #     shiftStart_var == objt.DateFrom,
+                    #     name="Shift.Start==Day.Start",
+                    # )
+                else:
+                    model.add_indicator(
+                        shiftAssignment_var,
+                        shiftStart_var >= timeAvai.TimeFrom,
+                        name="Shift.Start>=Availability.Start",
+                    )
 
                 # Set range for shift_end according to member Availability
-                model.add_constraint(
-                    shiftEnd_var <= timeAvai.TimeTo,
-                    "Shift.End<=Availability.End",
-                )
+                if timeAvai.TimeTo >= objt.DateTo:
+                    ""
+                    # model.add_indicator(
+                    #     shiftAssignment_var,
+                    #     shiftEnd_var == objt.DateTo,
+                    #     name="Shift.End==Day.End",
+                    # )     
+                else:
+                    model.add_indicator(
+                        shiftAssignment_var,
+                        shiftEnd_var <= timeAvai.TimeTo,
+                        name="Shift.End<=Availability.End",
+                    )
 
         else:
-            print("-",ctactId, objtId)
+            # print("-", ctactId, objtId)
             "If a shift_var of a member who is not availabe -> Start == Exnd"
-            model.add_constraint(model.shift_assignment_vars[varKey] == 0)
+            model.add_constraint(shiftAssignment_var == 0)
 
     # print(">> Heuristic check num", heuristic_check_num)
-
 
     # CONSTRAINT: MAKE SURE THERE ARE ALWAYS 'Minimum People Working' AT ANY MOMENT
     for objtId, objt in tqdm(model.objecttime_ids.items()):
@@ -538,7 +573,6 @@ def setup_constraints(model: Model):
             check_mem_isworking_vars = []
             check_object_times_vars = []
             for contactId in model.members.keys():
-                working_checker = []
                 shift_checker = []
                 is_working_var = model.binary_var(
                     "working_{0}_{1}".format(moment, contactId)
@@ -684,10 +718,10 @@ def setup_objective(model: Model):
     # model.add_kpi(total_fairness, "Total fairness")
 
     # model.minimize(
-        # total_members_assigment
-        #     model.total_salary_cost
-        #     + total_fairness
-        # + total_shift_assignment
+    # total_members_assigment
+    #     model.total_salary_cost
+    #     + total_fairness
+    # + total_shift_assignment
     # )
     return
 
@@ -705,7 +739,7 @@ def print_solution(model: Model):
 def solve(model: Model, **kwargs):
     # Here, we set the number of threads for CPLEX to 2 and set the time limit to 2mins.
     model.parameters.threads = 16
-    model.parameters.timelimit = 3600  # solver should not take more than that !
+    model.parameters.timelimit = 150  # solver should not take more than that !
     sol = model.solve(log_output=True, **kwargs)
     if sol is not None:
         print("solution for a cost of {}".format(model.objective_value))
@@ -735,6 +769,14 @@ def build(context=None, verbose=False, **kwargs):
 def displayModel(model: Model):
     df_shift = pd.DataFrame()
     df_break = pd.DataFrame()
+
+    def solution_get(var, key, default_val):
+        # try:
+        if key == None:
+            return model.solution.get_value(var.name)
+        return model.solution.get_value(var[key].name)
+        # except:
+        # return default_val
     # df["ContactId"] = [
     #     key[0] for key,var in model.shift_assignment_vars.items()
     # ]
@@ -757,7 +799,7 @@ def displayModel(model: Model):
         for key, var in model.shift_assignment_vars.items()
         if model.solution.get_value(var.name) == 1
     ]
-    df_break["ShiftID"] = [
+    df_break["BreakID"] = [
         "{0}_{1}_{2}".format(key[0], key[1], key[2])
         for key, var in model.break_allocated_vars.items()
         if model.solution.get_value(var.name) > 0
@@ -774,11 +816,21 @@ def displayModel(model: Model):
         for key, var in model.break_allocated_vars.items()
         if model.solution.get_value(var.name) > 0
     ]
-    df_break["Duration"] = [
-        model.solution.get_value(var.name)
+
+    df_break["__Num1"] = [
+        sum(
+            model.solution.get_value("K({0}_{1}_{2}_{3})".format(
+                key[0], key[1], key[2], moment))
+            for moment in range(
+                model.objecttime_ids[key[1]].DateFrom,
+                model.objecttime_ids[key[1]].DateTo - DEFAULT_BREAK_LENGTH + 1,
+                PERIOD_MINUTE
+            )
+        )
         for key, var in model.break_allocated_vars.items()
         if model.solution.get_value(var.name) > 0
     ]
+
     df_shift["ObjectTimeStart"] = [
         model.num2date(model.objecttime_ids[key[1]].DateFrom)
         for key, var in model.shift_assignment_vars.items()
@@ -801,6 +853,19 @@ def displayModel(model: Model):
         for key, var in model.shift_assignment_vars.items()
         if model.solution.get_value(var.name) == 1
     ]
+    df_shift["ShiftLength"] = [
+        model.solution.get_value(
+            model.shift_end_vars[key].name)
+        - model.solution.get_value(
+            model.shift_start_vars[key].name)
+        - solution_get(model.break_allocated_vars,
+                       (key[0], key[1], 0), 0) * DEFAULT_BREAK_LENGTH
+        - solution_get(model.break_allocated_vars,
+                       (key[0], key[1], 1), 0) * DEFAULT_BREAK_LENGTH
+        for key, var in model.shift_assignment_vars.items()
+        if model.solution.get_value(var.name) == 1
+    ]
+
     print(df_shift)
     print(df_break)
     df_shift.to_csv("result.csv")
@@ -809,7 +874,7 @@ def displayModel(model: Model):
 
     for objtId, objt in model.objecttime_ids.items():
         # check for every moment with offset = 30min
-        for moment in range(int(objt.DateFrom), int(objt.DateTo) + 1, 15):
+        for moment in range(int(objt.DateFrom), int(objt.DateTo) + 1, PERIOD_MINUTE):
             print(
                 model.num2date(moment),
                 sum(
