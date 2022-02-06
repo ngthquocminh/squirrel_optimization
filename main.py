@@ -92,7 +92,7 @@ def load_data(model, excel, verbose):
     anchor_date = df_vacancy_detail["StartDate"][0]
     # print(anchor_date)
     def date2num(dt): return int((dt - anchor_date).total_seconds() / 60)
-    
+
     model.num2date = lambda n: anchor_date + datetime.timedelta(
         days=int(n / (60 * 24)), hours=int((n % (60 * 24))) / 60
     )
@@ -165,7 +165,7 @@ def setup_data(model: Model):
     model.members = {m.ContactID: m for m in model.member_measurement}
     lst = list(set(model.objecttimes))
     lst.sort(key=lambda x: x.DateFrom)
-    model.objecttime_ids = {i: o for i, o in enumerate(lst[2:4])}
+    model.objecttime_ids = {i: o for i, o in enumerate(lst[2:3])}
 
 
 def setup_variables(model: Model):
@@ -184,35 +184,24 @@ def setup_variables(model: Model):
     )
 
     # print(model.shift_assignment_vars, "\n")
-
-    # ShiftStart_contactId_objectId_shift
-    model.shift_start_vars = model.integer_var_matrix(
-        keys1=model.members.keys(),
-        keys2=model.objecttime_ids.keys(),
-        lb=0,
-        ub=60 * 24 * 10,  # Limit for 10 days
-        name="ShiftStart",
-    )
-
-    # print(model.shift_start_vars,"\n")
-    # ShiftEnd
-    model.shift_end_vars = model.integer_var_matrix(
-        keys1=model.members.keys(),
-        keys2=model.objecttime_ids.keys(),
-        lb=0,
-        ub=60 * 24 * 10,  # Limit for 10 days
-        name="ShiftEnd",
-    )
-
-    # BreakStart
-    model.break_start_vars = model.integer_var_cube(
-        keys1=model.members.keys(),
-        keys2=model.objecttime_ids.keys(),
-        keys3=[j for j in range(0, MAX_BREAK_PER_SHIFT)],
-        lb=0,
-        ub=60 * 24 * 10,  # Limit for 10 days
-        name="BreakStart",
-    )
+    model.shift_start_vars = {}
+    model.shift_end_vars = {}
+    model.break_start_vars = {}
+    for ctactId in model.members.keys():
+        for objtId, objtTime in model.objecttime_ids.items():
+            ""
+            key = (ctactId, objtId)
+            newShiftStart_var = model.integer_var(
+                lb=objtTime.DateFrom, ub=objtTime.DateTo, name="ShiftStart_{0}_{1}".format(*key))
+            newShiftEnd_var = model.integer_var(
+                lb=objtTime.DateFrom, ub=objtTime.DateTo, name="ShiftEnd_{0}_{1}".format(*key))
+            model.shift_start_vars[key] = newShiftStart_var
+            model.shift_end_vars[key] = newShiftEnd_var
+            for brk in range(MAX_BREAK_PER_SHIFT):
+                brkKey = (ctactId, objtId, brk)
+                newBreakStart_var = model.integer_var(
+                    lb=objtTime.DateFrom, ub=objtTime.DateTo, name="BreakStart_{0}_{1}_{2}".format(*brkKey))
+                model.break_start_vars[brkKey] = newBreakStart_var
 
     # BreakDuration
     # print(model.break_start_vars)
@@ -367,7 +356,7 @@ def setup_constraints(model: Model):
         # Set range for shift_start according to objectTime
         model.add_indicator(
             shiftAssignment_var,
-            shiftStart_var >= objt.DateFrom, 
+            shiftStart_var >= objt.DateFrom,
             name="Shift.Start>=Date.From",
         )
 
@@ -487,7 +476,7 @@ def setup_constraints(model: Model):
             and getDate((avail.TimeFrom + avail.TimeTo) / 2)
             == getDate((objt.DateFrom + objt.DateTo) / 2),
         )
-        
+
         # print(shiftStart_var,timeAvai)
         if timeAvai:
             "If this member is availabilities for this objecttime"
@@ -513,9 +502,9 @@ def setup_constraints(model: Model):
                 )
             else:
                 model.add_constraint(shiftAssignment_var == 0)
-                
+
             del listVar1
-            
+
             if check_satisfied(timeAvai, objt) and heuristic_check_num[objtId] < vacancyQuantiyRequirement:
                 # print("+", ctactId, objtId)
                 heuristic_check_num[objtId] += 1
@@ -548,7 +537,7 @@ def setup_constraints(model: Model):
                     #     shiftAssignment_var,
                     #     shiftEnd_var == objt.DateTo,
                     #     name="Shift.End==Day.End",
-                    # )     
+                    # )
                 else:
                     model.add_indicator(
                         shiftAssignment_var,
@@ -739,7 +728,7 @@ def print_solution(model: Model):
 def solve(model: Model, **kwargs):
     # Here, we set the number of threads for CPLEX to 2 and set the time limit to 2mins.
     model.parameters.threads = 16
-    model.parameters.timelimit = 150  # solver should not take more than that !
+    model.parameters.timelimit = 1500  # solver should not take more than that !
     sol = model.solve(log_output=True, **kwargs)
     if sol is not None:
         print("solution for a cost of {}".format(model.objective_value))
