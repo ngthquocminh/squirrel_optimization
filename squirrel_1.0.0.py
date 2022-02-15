@@ -13,6 +13,10 @@ from docplex.mp.model import Model
 from docplex.util.environment import get_environment
 from functools import reduce
 import numpy as np
+import uuid
+import math
+from datetime import timedelta
+import sys
 
 TShift = namedtuple("TShift", ["name", "start_hour", "end_hour",
                                 "num_breaks","hours","var"])
@@ -67,12 +71,15 @@ TShiftConstraints = namedtuple(
 )
 TRange = namedtuple("TRange", ["From", "To"])
 
-file_name = "Squirrel_Optimization.xlsx"
+file_name = "Data/Squirrel_Optimization.xlsx"
 excel_data_file = pd.ExcelFile(file_name)
+df_vacancy_detail = excel_data_file.parse("Vacancy")
+ANCHOR_DATE = df_vacancy_detail["StartDate"][0]
 
 MAX_BREAK_PER_SHIFT = 4
 DEFAULT_BREAK_LENGTH = 0.5 * 60
 MIN_SHIFT_LENGTH = 4 * 60
+
 NUM_OBJECTTIME_PER_DAY = 12
 
 VAR=[]
@@ -85,16 +92,39 @@ def lookup(lst, func):
         # print(func(i))
         if func(i):
             return i
-        
+
+def convert_to_datetime(hour):
+    "Convert hour(int) to datetime based on anchor date"
+    beginning_date = ANCHOR_DATE
+    i = math.floor(hour / 24)
+    j = hour - 24 * i
+    date = beginning_date + timedelta(days=i)
+    date_time = date + timedelta(hours=j)
+    return date_time
 
 def load_data(model, excel):
-
+    "Loading data and creating model objects"
     df_vacancy_detail = excel.parse("Vacancy")
     df_vacancy_objectTime = excel.parse("Vacancy Object Time")
-    df_teamMember_measurement = excel.parse("Team Member Measurement")
     df_teamMember_worksiteReference = excel.parse(
         "Team Member Worksite Preference")
-    df_teamMember_availability = excel.parse("Team Member Availability")
+    #df_teamMember_availability = excel.parse("Team Member Availability")
+    df_teamMember_availability = pd.read_csv("Availabilities.csv")
+    
+    df_teamMember_availability.drop('Unnamed: 0',axis=1,inplace=True)
+    df_teamMember_availability['TimeFrom'] = pd.to_datetime(df_teamMember_availability['TimeFrom'],format='%d/%m/%Y %H:%M')
+    df_teamMember_availability['TimeTo'] = pd.to_datetime(df_teamMember_availability['TimeTo'],format='%d/%m/%Y %H:%M')
+    
+    # Intersect df_teamMember_measurement and df_teamMember_availability to get members that has 
+    # required measurement
+    # print(df_teamMember_availability)
+    df_teamMember_measurement = pd.read_csv("MembersMeasurement.csv")
+    df_teamMember_availability = pd.merge(df_teamMember_availability, df_teamMember_measurement, how='inner', on=['ContactID'])
+    del df_teamMember_availability["Team Member_y"]   
+    del df_teamMember_availability["Measurement"]   
+    df_teamMember_availability = df_teamMember_availability.rename(columns={"Team Member_x": "Team Member"})
+    print(df_teamMember_availability)
+    
     df_teamMember_shiftReference = excel.parse("Team Member Shift Preference")
     df_shift_constraints = excel.parse("Shift Constraints")
 
@@ -119,6 +149,13 @@ def load_data(model, excel):
     df_teamMember_availability.loc[:, "TimeTo"] = list(
         map(date2num, df_teamMember_availability["TimeTo"])
     )
+    
+    # df_teamMember_availability1.loc[:, "TimeFrom"] = list(
+    #     map(date2num, df_teamMember_availability1["TimeFrom"])
+    # )
+    # df_teamMember_availability1.loc[:, "TimeTo"] = list(
+    #     map(date2num, df_teamMember_availability1["TimeTo"])
+    # )
 
     del df_teamMember_availability["Team Member"]
     del df_teamMember_worksiteReference["Team Member"]
@@ -159,7 +196,7 @@ def load_data(model, excel):
     model.objecttimes = VACANCY_OBJECTTIME
     model.worksite_refs = MEM_WORKSITE_REFERENCE
     model.shift_refs = MEM_SHIFT_REFERENCE
-    model.member_measurement = MEM_MEASUREMENT[:11]
+    model.member_measurement = MEM_MEASUREMENT[:1]
     model.shift_constraints = SHIFT_CONSTRAINTS
     model.vacancy_detail = VACANCY_DETAIL
     
@@ -204,8 +241,10 @@ def getshifthours(timefrom,timeto):
         
         
 def setup_data(model):
+    "Setting up shifts to be allocated based on availabilities"
     temp = []
     for avail in model.availabilities:
+        #print(avail.TimeFrom,avail.TimeTo)
         avail_start,avail_end = getshifthours(avail.TimeFrom,avail.TimeTo)
         #print(avail_start,avail_end)
         shifts = create_shift(model,avail_start,avail_end)
@@ -230,22 +269,31 @@ def get_num_breaks(shift_len):
         return 1
     if shift_len == 10:
         return 2
-
+    
+def check_shift_in_range(model,time_check):
+    "Checks if start and end time exists between range of open and close times"
+    df_vacancies = model.vacancy_objectTime.groupby(['DateFrom','DateTo']).size().reset_index(name='Count')
+    for _,row in df_vacancies.iterrows():
+        if (row['DateFrom'] <= time_check <= row['DateTo']):
+            return True
+    return False
+      
 def create_shift(model,start_time,end_time):
     "creates shifts based on different starttimes and lengths based on availability"
+    
     SHIFTS = []
     for shift_start in range(start_time,end_time):
         for i in range(9):
             for j in range(7):
                 if (shift_start/df_shift_start[i][j]) == 1:
-                    # print("shift start: ",shift_start,"shift lengths",shift_len_list)
-                    shift_len_list = get_shift_length(shift_start,end_time)
-                    for shift_len in shift_len_list:
-                        var = model.binary_var()
-                        #work_indicator = model.binary_var()
-                        SHIFTS.append(("{0} hour shift".format(shift_len),shift_start,
-                                       shift_start+shift_len,get_num_breaks(shift_len),
-                                       shift_len,var))
+                    if check_shift_in_range(model,shift_start):
+                        shift_len_list = get_shift_length(shift_start,end_time)
+                        for shift_len in shift_len_list:
+                            if check_shift_in_range(model,shift_start+shift_len):
+                                var = model.binary_var()
+                                SHIFTS.append(("{0} hour shift".format(shift_len),shift_start,
+                                               shift_start+shift_len,get_num_breaks(shift_len),
+                                               shift_len,var))
     shifts = [TShift(*rs) for rs in SHIFTS]
     return shifts
            
@@ -260,6 +308,7 @@ def get_shift_periods(shift_len):
 
              
 def setup_variables(model):
+    "Creating objects for work periods and break periods"
     k = []
     for v in VAR:
         for sh in v.shift:
@@ -275,7 +324,7 @@ def setup_variables(model):
     return 
 
 def setup_constraints(model):                    
-    
+    "Setting up constraints"
     for v in VAR:
         shifts = v.shift
         model.add_constraint(model.sum(shift.var for shift in shifts) <= 1)
@@ -307,10 +356,11 @@ def setup_constraints(model):
                 model.add_constraint(period.break2_indicator <= sh.var)
                 model.add_constraint(period.work_indicator + period.break1_indicator + period.break2_indicator
                                       == sh.var)
+                
                 #Workhour and breakhour constraints
-                model.add_indicator(period.break1_indicator,period.period_end - sh.var*sh.start_hour <= 4*sh.var,0)
-                model.add_indicator(period.break1_indicator,period.period_end - sh.var*sh.start_hour >= 6*sh.var,0)
-                model.add_indicator(period.break2_indicator,period.period_end - sh.var*sh.start_hour <= 8*sh.var,0)
+                model.add_indicator(period.break1_indicator,period.period_start - sh.var*sh.start_hour >= 4*sh.var,1)
+                model.add_indicator(period.break1_indicator,period.period_start - sh.var*sh.start_hour <= 6*sh.var,1)
+                model.add_indicator(period.break2_indicator,period.period_start - sh.var*sh.start_hour >= 8*sh.var,1)                
                 model.add_indicator(period.break1_indicator,period.period_end - period.period_start == 0.5,1)
                 model.add_indicator(period.break2_indicator,period.period_end - period.period_start == 0.5,1)
             
@@ -328,14 +378,27 @@ def setup_constraints(model):
     print("Finished allocating breaks constraint")
     
     df_vacancies = model.vacancy_objectTime.groupby(['DateFrom','DateTo']).size().reset_index(name='Count')
+    model.total_slack_members = list()
+    model.on_floor_members_time = list()
     for _,row in df_vacancies.iterrows():
         for h in np.arange(row['DateFrom'],row['DateTo'],0.25):
-            var_list = [p for p in periods if p.shift.start_hour <= h <=p.shift.end_hour]
-            print(len(var_list))
-            on_floor_var = model.sum(p.work_indicator for p in var_list)
-            model.add_constraint(on_floor_var >= 5,"Minimum 5 members on floor at any time")
-            model.add_constraint(on_floor_var <= 12,"Max 12 members on floor at any time")
-
+            on_floor_sum = list()
+            slack_members = model.integer_var()
+            var_list = [p for p in periods if p.shift.start_hour <= h <= p.shift.end_hour]
+            for p in var_list:
+                ind_var = model.binary_var()
+                model.add_constraint(ind_var<=p.work_indicator)
+                model.add_indicator(ind_var,p.period_start<=h,1)
+                model.add_indicator(ind_var,p.period_end>=h,1)
+                on_floor_sum.append(ind_var)
+            
+            #Constrain to set minimum and maximum limit on on floor members
+            on_floor_var = model.sum(indicator for indicator in on_floor_sum)
+            model.add_constraint(on_floor_var + slack_members >=9,"Minimum 9 members on floor at any time")
+            model.add_constraint(on_floor_var <= 12, "Max 12 members on floor at any time")
+            model.total_slack_members.append(slack_members)
+            model.on_floor_members_time.append(on_floor_var)
+            
     print("Added vacancy filling constraints")
     
     
@@ -348,11 +411,20 @@ def parameter_set_with_timelimit(cplex, limit):
     return ps
 
 def setup_objectives(model):
-    model.total_shifts = model.sum(p.shift.var for p in periods)
+    "Setting up objectives and KPIs"
+    model.total_shifts = model.sum(sh.var for v in VAR for sh in v.shift)
+    model.unfilled_members = model.sum(model.total_slack_members)
+    #KPIs
     model.add_kpi(model.total_shifts,"Total shifts assigned")
+    model.add_kpi(model.unfilled_members,"Total unfilled members across the week")
+    #Minimization function
+    model.minimize(model.unfilled_members)
     return 
 
+
+
 def build():
+    "Builing the whole model"
     mdl = Model()
     load_data(mdl,excel_data_file)
     setup_data(mdl)
@@ -371,9 +443,54 @@ if __name__ == '__main__':
 
     start_time = time.time()
     model = build()
+    model.parameters.mip.tolerances.mipgap.set(1e-01)
+    model.parameters.multiobjective.display.set(1)
     solve=model.solve()
     if solve:
         model.report_kpis()
+        
+        #Creating results for hourly profile
+        i=0
+        hourly_profile = list()
+        df_vacancies = model.vacancy_objectTime.groupby(['DateFrom','DateTo']).size().reset_index(name='Count')
+        for _,row in df_vacancies.iterrows():
+            for h in np.arange(row['DateFrom'],row['DateTo'],0.25):
+                hourly_profile.append((convert_to_datetime(h),model.total_slack_members[i].solution_value,
+                                       model.on_floor_members_time[i].solution_value))
+                i += 1
+                
+        hourly_profile_df = pd.DataFrame(hourly_profile,columns = ['Time','Unfilled_Members','Members_on_floor'])
+        hourly_profile_df.to_csv('Hourly_profile.csv')
+        
+        #Creating Shifts
+        k=[]
+        for v in VAR:
+            for sh in v.shift:
+                shift_assigned = sh.var.solution_value
+                if shift_assigned>1e-8: 
+                    shift_uid = str(uuid.uuid4())
+                    periods_shift1 = [p for p in periods if p.ContactID == v.ContactID and 
+                                 p.shift == sh]
+                    for p in periods_shift1:
+                        period_uid = str(uuid.uuid4())
+                        k.append((v.ContactID,shift_uid,convert_to_datetime(sh.start_hour),convert_to_datetime(sh.end_hour),
+                                  convert_to_datetime(p.period_start.solution_value),convert_to_datetime(p.period_end.solution_value),
+                                  p.work_indicator.solution_value,p.break1_indicator.solution_value,
+                                  p.break2_indicator.solution_value,period_uid))
+
+        shifts = pd.DataFrame(k,columns=['ContactID','ShiftID','Shift_Start','Shift_End','Period_Start',
+                                         'Period_End','Work_Indicator','Break1','Break2','Shift_Detail_ID'])
+        shifts['Shift_Start'] = shifts['Shift_Start'].astype(str)
+        shifts['Shift_End'] = shifts['Shift_End'].astype(str)
+        shifts['Period_Start'] = shifts['Period_Start'].astype(str)
+        shifts['Period_End'] = shifts['Period_End'].astype(str)
+        
+        for i in range(len(shifts)):
+            shifts.loc[i,'Period_Start'] = shifts.loc[i,'Period_Start'].split(".",1)[0]
+            shifts.loc[i,'Period_End'] = shifts.loc[i,'Period_End'].split(".",1)[0]
+        shifts.to_csv('Squirrel_Shifts.csv')
+        print("--- %s seconds ---" % (time.time() - start_time))
+                
         
 
                         

@@ -57,7 +57,7 @@ TRange = namedtuple("TRange", ["From", "To"])
 file_name = "./Data/Squirrel_Optimization.xlsx"
 excel_data_file = pd.ExcelFile(file_name)
 
-PERIOD_MINUTE = 15
+PERIOD_MINUTE = 30
 
 MAX_BREAK_PER_SHIFT = 2
 NUM_OBJECTTIME_PER_DAY = 12
@@ -66,14 +66,13 @@ DEFAULT_BREAK_LENGTH = int(0.5 * 60)
 MIN_SHIFT_LENGTH = int(4.0 * 60)
 SECONDARY_BREAK_TIME = int(8.0 * 60)
 
-START_TIMES_LIST = list(t*60 for t in [5, 6, 8, 9, 13, 14, 15, 16])
+START_TIMES_LIST = list(t*60 for t in [5, 6, 8, 10, 13, 14, 15, 16])
 
 
 def lookup(lst, func):
     # print("Lookup ")
     for i in lst:
-        # print(i)
-        # print(func(i))
+        # print(i,func(i))
         if func(i):
             return i
 
@@ -165,7 +164,7 @@ def setup_data(model: Model):
     model.members = {m.ContactID: m for m in model.member_measurement}
     lst = list(set(model.objecttimes))
     lst.sort(key=lambda x: x.DateFrom)
-    model.objecttime_ids = {i: o for i, o in enumerate(lst[2:3])}
+    model.objecttime_ids = {i: o for i, o in enumerate(lst[0:7])}
 
 
 def setup_variables(model: Model):
@@ -227,9 +226,10 @@ def setup_constraints(model: Model):
     minPeopleWorking = model.shift_constraints.MinPeopleWorking
     vacancyQuantiyRequirement = model.vacancy_detail.Quantity
     vacancyQuantiyRequirement = 12
-    minPeopleWorking = 9
+    minPeopleWorking = 7
     SHIFT_DURATION_LIST = list(
-        int(t*60) for t in ([0, 4] + [4+i/float(60/PERIOD_MINUTE) for i in range(1, int(6*float(60/PERIOD_MINUTE))+1)])
+        # int(t*60) for t in ([0, 4] + [4+i/float(60/PERIOD_MINUTE) for i in range(1, int(6*float(60/PERIOD_MINUTE))+1)])
+        int(t*60) for t in ([0, 4, 6, 8, 11])
     )
     # print(model.num2date(model.objecttime_ids[0].DateFrom))
     # If any partial shift of a member is assigned => this member is assigned
@@ -306,11 +306,8 @@ def setup_constraints(model: Model):
             newVar = model.binary_var()
             model.add_equivalence(
                 newVar,
-                shiftEndtVar - shiftStartVar - model.sum(
-                    model.break_allocated_vars[(
-                        ctactId, objtId, brk)] * DEFAULT_BREAK_LENGTH
-                    for brk in range(0, MAX_BREAK_PER_SHIFT)
-                ) == shift_duration
+                shiftEndtVar - shiftStartVar
+                == shift_duration
             )
             listVar2.append(newVar)
 
@@ -321,29 +318,28 @@ def setup_constraints(model: Model):
 
     # CONSTRAINT : LIMIT WORKING HOUR PER WEEEK
     # currently, considering the whole vacancy is a week
-    # model.work_time_var = {}
-    # for ctactId in model.members.keys():
-    #     model.work_time_var[ctactId] = model.sum(
-    #         (
-    #             model.shift_end_vars[(ctactId, objtId, shft)]
-    #             - model.shift_start_vars[(ctactId, objtId, shft)]
-    #         )
-    #         for objtId in model.objecttime_ids.keys()
-    #         for shft in range(0, MAX_SHIFT_PER_OBJECTTIME)
-    #     )
-    #     # -model.sum(
-    #     #     model.break_allocated_vars[(ctactId, objtId, brk)] * DEFAULT_BREAK_LENGTH
-    #     #     for objtId in model.objecttime_ids.keys()
-    #     #     for shft in range(0, MAX_SHIFT_PER_OBJECTTIME)
-    #     #     for brk in range(0, MAX_BREAK_PER_SHIFT)
-    #     # )
-    #     model.add_constraint(
-    #         model.le_constraint(
-    #             model.work_time_var[ctactId],
-    #             model.shift_constraints.MaxHoursPerWeek * 60,  # Minutes
-    #             "MaxHoursPerWeek",
-    #         )
-    #     )
+    model.work_time_vars = {}
+    for ctactId in model.members.keys():
+        # model.work_time_vars[ctactId] =
+        model.add_constraint(
+            model.le_constraint(
+                model.sum(
+                    (
+                        model.shift_end_vars[(ctactId, objtId)]
+                        - model.shift_start_vars[(ctactId, objtId)]
+                    )
+                    for objtId in model.objecttime_ids.keys()
+                )
+                - model.sum(
+                    model.break_allocated_vars[
+                        (ctactId, objtId, brk)] * DEFAULT_BREAK_LENGTH
+                    for objtId in model.objecttime_ids.keys()
+                    for brk in range(0, MAX_BREAK_PER_SHIFT)
+                ),
+                model.shift_constraints.MaxHoursPerWeek * 60,  # Minutes
+                "MaxHoursPerWeek",
+            )
+        )
 
     # Normal shift constraints
     for ctactId, objtId in model.shift_assignment_vars.keys():
@@ -451,15 +447,6 @@ def setup_constraints(model: Model):
                     + SECONDARY_BREAK_TIME,
                 )
 
-            # if brk < MAX_BREAK_PER_SHIFT - 1:
-            #     next_brk_key = (ctactId, objtId, brk + 1)
-            #     model.add_constraint(
-            #         model.break_allocated_vars[brk_key] * DEFAULT_BREAK_LENGTH +
-            #         model.break_start_vars[brk_key]
-            #         <= model.break_start_vars[next_brk_key],
-            #         "Break.Start+Duration<=NextBreak.Start",
-            #     )
-
     # Check Availability
     heuristic_check_num = {key: 0 for key in model.objecttime_ids.keys()}
     for ctactId, objtId in model.shift_assignment_vars.keys():
@@ -487,7 +474,7 @@ def setup_constraints(model: Model):
                 if start_time >= objt.DateFrom and start_time >= timeAvai.TimeFrom
                 and start_time+4*60 <= objt.DateTo and start_time+4*60 <= timeAvai.TimeTo
             ]
-            print(">> ", ctactId, get_starttime_var_list)
+            # print(">> ", ctactId, [str(model.num2date(i)) for i in get_starttime_var_list])
             listVar1 = []
             for start_time in get_starttime_var_list:
                 newVar = model.binary_var()
@@ -727,8 +714,8 @@ def print_solution(model: Model):
 
 def solve(model: Model, **kwargs):
     # Here, we set the number of threads for CPLEX to 2 and set the time limit to 2mins.
-    model.parameters.threads = 16
-    model.parameters.timelimit = 1500  # solver should not take more than that !
+    model.parameters.threads = 14
+    model.parameters.timelimit = 7200  # solver should not take more than that !
     sol = model.solve(log_output=True, **kwargs)
     if sol is not None:
         print("solution for a cost of {}".format(model.objective_value))
@@ -864,65 +851,65 @@ def displayModel(model: Model):
     for objtId, objt in model.objecttime_ids.items():
         # check for every moment with offset = 30min
         for moment in range(int(objt.DateFrom), int(objt.DateTo) + 1, PERIOD_MINUTE):
-            print(
-                model.num2date(moment),
-                sum(
-                    1
-                    for contactId in model.members.keys()
-                    if model.solution.get_value(
-                        model.shift_assignment_vars[(
-                            contactId, objtId)].name
-                    ) == 1
-                    and moment
-                    >= model.solution.get_value(
-                        model.shift_start_vars[(contactId, objtId)].name
-                    )
-                    and (
-                        moment
-                        < model.solution.get_value(
-                            model.shift_end_vars[(
-                                contactId, objtId)].name
-                        )
-                        or (
+            lst = []
+            for contactId in model.members.keys():
+                if model.solution.get_value(
+                    model.shift_assignment_vars[(
+                        contactId, objtId)].name
+                ) == 1:
+                    if moment >= model.solution.get_value(
+                            model.shift_start_vars[(contactId, objtId)].name
+                        ) and (
                             moment
-                            == model.solution.get_value(
+                            < model.solution.get_value(
                                 model.shift_end_vars[(
                                     contactId, objtId)].name
                             )
-                            and moment == objt.DateTo
-                        )
-                    )
-                    and sum(
-                        1
-                        for brk in range(0, MAX_BREAK_PER_SHIFT)
-                        if (
-                            model.solution.get_value(
-                                model.break_allocated_vars[
-                                    (contactId, objtId, brk)
-                                ].name
-                            ) == 1
-                            and
-                            moment
-                            >= model.solution.get_value(
-                                model.break_start_vars[
-                                    (contactId, objtId, brk)
-                                ].name
+                            or (
+                                moment
+                                == model.solution.get_value(
+                                    model.shift_end_vars[(
+                                        contactId, objtId)].name
+                                )
+                                and moment == objt.DateTo
                             )
-                            and moment
-                            < DEFAULT_BREAK_LENGTH * model.solution.get_value(
-                                model.break_allocated_vars[
-                                    (contactId, objtId, brk)
-                                ].name
-                            )
-                            + model.solution.get_value(
-                                model.break_start_vars[
-                                    (contactId, objtId, brk)
-                                ].name
-                            )
-                        )
-                    )
-                    == 0
-                ),
+                    ):
+
+                        __lst = list(1
+                                     for brk in range(0, MAX_BREAK_PER_SHIFT)
+                                     if (
+                                         model.solution.get_value(
+                                             model.break_allocated_vars[
+                                                 (contactId, objtId, brk)
+                                             ].name
+                                         ) == 1
+                                         and
+                                         moment
+                                         >= model.solution.get_value(
+                                             model.break_start_vars[
+                                                 (contactId, objtId, brk)
+                                             ].name
+                                         )
+                                         and moment
+                                         < int(DEFAULT_BREAK_LENGTH * model.solution.get_value(
+                                             model.break_allocated_vars[
+                                                 (contactId, objtId, brk)
+                                             ].name
+                                         )
+                                             + model.solution.get_value(
+                                             model.break_start_vars[
+                                                 (contactId, objtId, brk)
+                                             ].name
+                                         ))
+                                     ))
+                        if sum(
+                            __lst
+                        ) == 0:
+                            lst.append(1)
+
+            print(
+                model.num2date(moment),
+                sum(lst)
             )
 
 
