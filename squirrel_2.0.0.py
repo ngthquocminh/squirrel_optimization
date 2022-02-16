@@ -172,35 +172,14 @@ class ModelObjects:
 
     def init_starttimes(self):
         "Initailizing starttimes for shifts"
-        h3 = []
-        h4 = []
-        h5 = []
-        h6 = []
-        h7 = []
-        h8 = []
-        h9 = []
-        h10 = []
-        h13 = []
-        h14 = []
-        h15 = []
-        h16 = []
+        start_times = [5,6,7,8,9,10,13,14,15,16]
+        self.model.df_shift_start = pd.DataFrame()
+        for i,st in enumerate(start_times):
+            arr = []
+            for mins in range(60):
+                arr.append(st + st*mins)
+            self.model.df_shift_start[i] = arr
 
-        for i in range(60):
-            h3.append(3+24*i)
-            h4.append(4+24*i)
-            h5.append(5+24*i)
-            h6.append(6+24*i)
-            h7.append(7+24*i)
-            h8.append(8+24*i)
-            h9.append(9+24*i)
-            h10.append(10+24*i)
-            h13.append(13+24*i)
-            h14.append(14+24*i)
-            h15.append(15+24*i)
-            h16.append(16+24*i)
-
-        self.model.df_shift_start = pd.DataFrame(
-            [h5, h6, h7, h8, h9, h10, h13, h14, h15, h16]).T
 
     def convert_to_datetime(self, hour):
         "Convert hour(int) to datetime based on anchor date"
@@ -237,13 +216,10 @@ class SetupData(ModelObjects):
                      for v in self.model.vacancy_objecttimes]
         shifthours = []
         for objecttime in shiftopen:
-            start,end,id = objecttime
-            
+            start, end, id = objecttime
+
             if timefrom in range(start, end) and timeto in range(start, end):
-                avail_start = timefrom
-                avail_end = timeto
-                shifthours.append(
-                    (contactid, avail_start, avail_end, id))
+                shifthours.append((contactid, timefrom, timeto, id))
             elif timefrom in range(start, end):
                 shifthours.append((contactid, timefrom, end, id))
             elif timeto in range(start, end):
@@ -264,10 +240,15 @@ class SetupData(ModelObjects):
                 for sl in self.shift_len_data:
                     if sl <= time_diff:
                         var = self.model.binary_var()
-                        self.SHIFTS.append(("{0} hour shift".format(sl), object_time_id, sh_start,
-                                            sh_start +
-                                            sl, self.get_num_breaks(sl),
-                                            sl, var))
+                        return (
+                            "{0} hour shift".format(sl), 
+                            object_time_id, 
+                            sh_start,
+                            sh_start + sl, 
+                            self.get_num_breaks(sl),
+                            sl, 
+                            var
+                        )
 
     def get_shift_length(self, start_time, end_time):
         "Create shift length possiblities based on different start times and end time"
@@ -291,7 +272,9 @@ class SetupData(ModelObjects):
                 objecttimeid = shift[3]
                 for shift_start in range(start_time, end_time):
                     if self.model.df_shift_start.isin([shift_start]).sum().sum() > 0:
-                        self.check_shift_in_range(shift_start, objecttimeid)
+                        _shift = self.check_shift_in_range(shift_start, objecttimeid)
+                        if _shift != None:
+                            self.SHIFTS.append(_shift)
         shifts_obj = [self.model.TShift(*rs) for rs in self.SHIFTS]
         return shifts_obj
 
