@@ -31,7 +31,7 @@ class ModelObjects:
 
     def create_namedtuples(self):
         self.model.TShift = namedtuple(
-            "TShift", 
+            "TShift",
             ["name", "objecttimeid", "start_hour", "end_hour", "num_breaks", "hours", "var"])
         self.model.TBreak = namedtuple(
             "TBreak", ["start_hour", "end_hour"])
@@ -59,7 +59,7 @@ class ModelObjects:
             ["vacancyid", "objecttimeid", "start_hour",
                 "end_hour", "positionid", "worksiteid"]
         )
-        
+
         self.model.TShiftConstraints = namedtuple(
             "TShiftContraints",
             [
@@ -131,16 +131,17 @@ class ModelObjects:
     def load_model_objects(self):
         for i in range(len(self.model.df_teamMember_availability)):
             if self.model.df_teamMember_availability.loc[i, 'StartDateTime'] == self.model.df_teamMember_availability.loc[i, 'EndDateTime']:
-                self.model.df_teamMember_availability.loc[i,'EndDateTime'] = self.model.df_teamMember_availability.loc[i, 'StartDateTime'] + 24
+                self.model.df_teamMember_availability.loc[i,
+                                                          'EndDateTime'] = self.model.df_teamMember_availability.loc[i, 'StartDateTime'] + 24
 
         MEM_AVAILAVILITY = [
             self.model.TMemberAvailability(*row) for _, row in self.model.df_teamMember_availability.iterrows()
         ]
-        self.model.availabilities = MEM_AVAILAVILITY
+        self.model.availabilities = MEM_AVAILAVILITY[:]
 
         VACANCY_OBJECTTIME = [
             self.model.TVacancyObjectTime(*row) for _, row in self.model.vacancy_objecttime.iterrows()]
-        self.model.vacancy_objecttimes = VACANCY_OBJECTTIME
+        self.model.vacancy_objecttimes = VACANCY_OBJECTTIME[:1]
 
         VACANCY_DETAILS = [
             self.model.TVacancyDetails(*row) for _, row in self.model.df_vacancy_details.iterrows()
@@ -171,29 +172,35 @@ class ModelObjects:
 
     def init_starttimes(self):
         "Initailizing starttimes for shifts"
+        h3 = []
+        h4 = []
         h5 = []
         h6 = []
         h7 = []
         h8 = []
         h9 = []
+        h10 = []
         h13 = []
         h14 = []
         h15 = []
         h16 = []
 
         for i in range(60):
+            h3.append(3+24*i)
+            h4.append(4+24*i)
             h5.append(5+24*i)
             h6.append(6+24*i)
             h7.append(7+24*i)
             h8.append(8+24*i)
             h9.append(9+24*i)
+            h10.append(10+24*i)
             h13.append(13+24*i)
             h14.append(14+24*i)
             h15.append(15+24*i)
             h16.append(16+24*i)
 
         self.model.df_shift_start = pd.DataFrame(
-            [h5, h6, h7, h8, h9, h13, h14, h15, h16]).T
+            [h5, h6, h7, h8, h9, h10, h13, h14, h15, h16]).T
 
     def convert_to_datetime(self, hour):
         "Convert hour(int) to datetime based on anchor date"
@@ -217,38 +224,44 @@ class SetupData(ModelObjects):
         self.init_starttimes()
         self.model.VAR = []
         self.model.periods = []
+        self.shift_len_data = {
+            4: {"NBreaks": 0, "NPeriods": 1},
+            6: {"NBreaks": 1, "NPeriods": 3},
+            8: {"NBreaks": 1, "NPeriods": 3},
+            10: {"NBreaks": 2, "NPeriods": 5}
+        }
 
     def getshifthours(self, contactid, timefrom, timeto):
         "Create modified availability start and end time based on open and close hours"
         shiftopen = [(v.start_hour, v.end_hour, v.objecttimeid)
                      for v in self.model.vacancy_objecttimes]
         shifthours = []
-        for i in shiftopen:
-            objecttimeid = i[2]
-            if timefrom in range(i[0], i[1]) and timeto in range(i[0], i[1]):
+        for objecttime in shiftopen:
+            start,end,id = objecttime
+            
+            if timefrom in range(start, end) and timeto in range(start, end):
                 avail_start = timefrom
                 avail_end = timeto
                 shifthours.append(
-                    (contactid, avail_start, avail_end, objecttimeid))
-            elif timefrom in range(i[0], i[1]):
-                shifthours.append((contactid, timefrom, i[1], objecttimeid))
-            elif timeto in range(i[0], i[1]):
-                shifthours.append((contactid, i[0], timeto, objecttimeid))
-            elif i[0] in range(timefrom, timeto) and i[1] in range(timefrom, timeto):
-                shifthours.append((contactid, i[0], i[1], objecttimeid))
+                    (contactid, avail_start, avail_end, id))
+            elif timefrom in range(start, end):
+                shifthours.append((contactid, timefrom, end, id))
+            elif timeto in range(start, end):
+                shifthours.append((contactid, start, timeto, id))
+            elif start in range(timefrom, timeto) and end in range(timefrom, timeto):
+                shifthours.append((contactid, start, end, id))
             else:
                 pass
         return shifthours
 
     def check_shift_in_range(self, sh_start, object_time_id):
         "Checks if start and end time exists between range of open and close times"
-        shift_len = [4, 8, 10]
         for vacancy in self.model.vacancy_objecttimes:
             if vacancy.objecttimeid == object_time_id:
                 starthour = vacancy.start_hour
                 endhour = vacancy.end_hour
                 time_diff = vacancy.end_hour - sh_start
-                for sl in shift_len:
+                for sl in self.shift_len_data:
                     if sl <= time_diff:
                         var = self.model.binary_var()
                         self.SHIFTS.append(("{0} hour shift".format(sl), object_time_id, sh_start,
@@ -258,21 +271,15 @@ class SetupData(ModelObjects):
 
     def get_shift_length(self, start_time, end_time):
         "Create shift length possiblities based on different start times and end time"
-        shift_len = [4, 8, 10]
         shift_len_list = []
-        for sl in shift_len:
+        for sl in self.shift_len_data:
             if start_time + sl <= end_time:
                 shift_len_list.append(sl)
         return shift_len_list
 
     def get_num_breaks(self, shift_len):
         "get number of breaks by shift length"
-        if shift_len == 4:
-            return 0
-        if shift_len == 8:
-            return 1
-        if shift_len == 10:
-            return 2
+        return self.shift_len_data[shift_len]["NBreaks"] if shift_len in self.shift_len_data else 0
 
     def create_shift(self, shifts):
         "creates shifts based on different starttimes and lengths based on availability"
@@ -290,12 +297,7 @@ class SetupData(ModelObjects):
 
     def get_shift_periods(self, shift_len):
         "get number of periods for each shift based on shift length"
-        if shift_len == 4:
-            return 1
-        if shift_len == 8:
-            return 3
-        if shift_len == 10:
-            return 5
+        return self.shift_len_data[shift_len]["NPeriods"] if shift_len in self.shift_len_data else 0
 
     def setup_data(self):
         "Setting up shifts to be allocated based on availabilities"
@@ -335,13 +337,13 @@ class SetupConstraints(ModelObjects):
         self.model.day_limit = 10
 
     def shift_assign_constraint(self):
-        for v in self.model.VAR:
+        for v in tqdm(self.model.VAR):
             shifts = v.shift
             self.model.add_constraint(self.model.sum(
                 shift.var*(shift.end_hour - shift.start_hour) for shift in shifts) <= self.model.day_limit)
             for sh in v.shift:
                 periods_shift = [p for p in self.model.periods if p.contactid == v.contactid and
-                                 p.shift == sh]
+                                 p.shift is sh]
                 # Break indicator constraints based on shift hours
                 if sh.hours == 4:
                     self.model.add_constraint(self.model.sum(
@@ -521,7 +523,7 @@ class CreateResults(ModelObjects):
                 if shift_assigned > 1e-8:
                     shift_uid = str(uuid.uuid4())
                     periods_shift1 = [p for p in self.model.periods if p.contactid == v.contactid and
-                                      p.shift == sh]
+                                      p.shift is sh]
                     for p in periods_shift1:
                         period_uid = str(uuid.uuid4())
                         k.append((v.contactid, shift_uid, sh.objecttimeid, self.convert_to_datetime(sh.start_hour), self.convert_to_datetime(sh.end_hour),
@@ -576,16 +578,19 @@ class ModelBuild:
     def create_model_run(self):
         self.Setup_Data = SetupData(self.data, self.model)
         self.Setup_Data.setup_data()
-
+        print("1. Setting up Data: Done!")
         self.Setup_Constraints = SetupConstraints(self.data, self.model)
         self.Setup_Constraints.add_constraints()
 
+        print("2. Setting up Constraints: Done!")
         self.Setup_Objectives = SetupObjectives(self.data, self.model)
         self.Setup_Objectives.setup_objectives()
 
+        print("3. Setting up Objectives: Done!")
         self.Model_Solve = ModelSolve(self.data, self.model)
         self.solution = self.Model_Solve.solve_model()
 
+        print("4. Model solving: Done!")
         self.Create_Results = CreateResults(
             self.data, self.model, self.solution)
         self.Create_Results.create_results()
