@@ -30,29 +30,36 @@ class ModelObjects:
         self.model = model
 
     def create_namedtuples(self):
-        self.model.TShift = namedtuple("TShift", ["name", "objecttimeid", "start_hour", "end_hour",
-                                                  "num_breaks", "hours", "var"])
+        self.model.TShift = namedtuple(
+            "TShift", 
+            ["name", "objecttimeid", "start_hour", "end_hour", "num_breaks", "hours", "var"])
         self.model.TBreak = namedtuple(
             "TBreak", ["start_hour", "end_hour"])
         self.model.TPeriod = namedtuple(
-            "TPeriod", ["contactid", "shift", "period_start", "period_end", "work_indicator", "break1_indicator",
-                        "break2_indicator"])
-        self.model.TTeamMemberInfo = namedtuple("TTeamMemberInfo", ["contactid", "gradeid", "ebaid",
-                                                                    "employment_typeid", "availability", "roster"])
-        self.model.TVar = namedtuple("TVariable", ["contactid", "time_period",
-                                                   "shift"])
+            "TPeriod",
+            ["contactid", "shift", "period_start", "period_end", "work_indicator", "break1_indicator", "break2_indicator"])
+        self.model.TTeamMemberInfo = namedtuple(
+            "TTeamMemberInfo",
+            ["contactid", "gradeid", "ebaid", "employment_typeid", "availability", "roster"])
+
+        self.model.TVar = namedtuple(
+            "TVariable",
+            ["contactid", "time_period", "shift"])
+
         self.model.TMemberAvailability = namedtuple(
-            "TMemberAvailability", ["contactid",
-                                    "team_member", "start_hour", "end_hour"]
+            "TMemberAvailability",
+            ["contactid", "team_member", "start_hour", "end_hour"]
         )
         self.model.TMemberWorksitePreference = namedtuple(
-            "TMemberWorksiteReference", [
-                "contactid", "team_member", "Worksite"]
+            "TMemberWorksiteReference",
+            ["contactid", "team_member", "Worksite"]
         )
         self.model.TVacancyObjectTime = namedtuple(
-            "TVacancyObjectTime", ["vacancyid", "objecttimeid", "start_hour", "end_hour",
-                                   "positionid", "worksiteid"]
+            "TVacancyObjectTime",
+            ["vacancyid", "objecttimeid", "start_hour",
+                "end_hour", "positionid", "worksiteid"]
         )
+        
         self.model.TShiftConstraints = namedtuple(
             "TShiftContraints",
             [
@@ -65,11 +72,13 @@ class ModelObjects:
                 "MaxPeopleWorking"
             ],
         )
-        self.model.TTeamMemberQual = namedtuple("TTeamMemberQualifications", [
-                                                'contactid', 'team_member', 'measurementid'])
-        self.model.TVacancyDetails = namedtuple("TVacancyDetails", ['vacancyid', 'StartDateTime', 'EndDateTime',
-                                                                    'quantity', 'minquantity', 'worksiteid',
-                                                                    'posisitonid', 'measurementid'])
+        self.model.TTeamMemberQual = namedtuple(
+            "TTeamMemberQualifications",
+            ['contactid', 'team_member', 'measurementid'])
+
+        self.model.TVacancyDetails = namedtuple(
+            "TVacancyDetails",
+            ['vacancyid', 'StartDateTime', 'EndDateTime', 'quantity', 'minquantity', 'worksiteid', 'posisitonid', 'measurementid'])
 
     def read_input_data(self):
         file = open(self.json_input, "r")
@@ -122,8 +131,7 @@ class ModelObjects:
     def load_model_objects(self):
         for i in range(len(self.model.df_teamMember_availability)):
             if self.model.df_teamMember_availability.loc[i, 'StartDateTime'] == self.model.df_teamMember_availability.loc[i, 'EndDateTime']:
-                self.model.df_teamMember_availability.loc[i,
-                                                          'EndDateTime'] = self.model.df_teamMember_availability.loc[i, 'StartDateTime'] + 24
+                self.model.df_teamMember_availability.loc[i,'EndDateTime'] = self.model.df_teamMember_availability.loc[i, 'StartDateTime'] + 24
 
         MEM_AVAILAVILITY = [
             self.model.TMemberAvailability(*row) for _, row in self.model.df_teamMember_availability.iterrows()
@@ -469,6 +477,7 @@ class ModelSolve(ModelObjects):
         self.model = model
 
     def solve_model(self):
+        print("Solving the model...\n")
         self.model.parameters.mip.tolerances.mipgap.set(1e-01)
         self.model.parameters.multiobjective.display.set(1)
         solve = self.model.solve()
