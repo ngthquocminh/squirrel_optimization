@@ -5,9 +5,12 @@ Created on Tue Feb  8 13:18:22 2022
 @author: Bronwyn
 """
 
-# Modification: 
-# 1. 
-#
+# Modification:
+# 1. Create availability data
+# 2. Fix some small bugs AND refactor some codes
+# 3. Refactor Starttimes and Shiftlens for easy to config
+# 4. Add constraint for all get-shifts (per one availabililty) that only one is assigned
+# 5. DOING...: fix the constraint group for minQuantity and maxQuantity
 
 from collections import namedtuple
 import datetime
@@ -173,7 +176,7 @@ class ModelObjects:
         df.loc[:, col] = list(map(self.date2num, df[col]))
 
     def init_starttimes(self):
-        "Initailizing starttimes for shifts"
+        "Initailizing StartTimes for shifts"
         start_times = [5, 6, 7, 8, 9, 10, 13, 14, 15, 16]
         self.model.df_shift_start = pd.DataFrame()
         for i, st in enumerate(start_times):
@@ -194,7 +197,7 @@ class ModelObjects:
 
 class SetupData(ModelObjects):
 
-    def __init__(self, data, model:Model):
+    def __init__(self, data, model: Model):
         self.json_input = data
         self.model = model
         self.create_namedtuples()
@@ -289,13 +292,10 @@ class SetupData(ModelObjects):
                 avail.contactid, avail.start_hour, avail.end_hour)
             # print(avail_start,avail_end)
             shifts = self.create_shift(shift_list)
-            
-            self.model.add_constraint(self.model.sum(sh.var for sh in shifts) <= 1)
-            if avail.contactid == "6B0A4CE9-3229-432D-989A-25E5F8E7743D":
-                if len(shift_list) > 0:
-                    print(shift_list)
-                if len(shifts) > 0:
-                    print(shifts)
+
+            self.model.add_constraint(
+                self.model.sum(sh.var for sh in shifts) <= 1)
+
             temp = (avail.contactid, avail, shifts)
             self.model.VAR.append(self.model.TVar(*temp))
 
@@ -330,27 +330,29 @@ class SetupConstraints(ModelObjects):
             self.model.add_constraint(self.model.sum(
                 shift.var*(shift.end_hour - shift.start_hour) for shift in shifts) <= self.model.day_limit)
             for sh in v.shift:
-                periods_shift = [p for p in self.model.periods if p.contactid == v.contactid and
-                                 p.shift is sh]
+                periods_of_one_shift = [
+                    period
+                    for period in self.model.periods
+                    if period.contactid == v.contactid and period.shift is sh
+                ]
                 # Break indicator constraints based on shift hours
                 if sh.hours == 4:
                     self.model.add_constraint(self.model.sum(
-                        p.break1_indicator for p in periods_shift) == 0*sh.var)
+                        p.break1_indicator for p in periods_of_one_shift) == 0*sh.var)
                     self.model.add_constraint(self.model.sum(
-                        p.break2_indicator for p in periods_shift) == 0*sh.var)
+                        p.break2_indicator for p in periods_of_one_shift) == 0*sh.var)
                 if sh.hours == 8:
                     self.model.add_constraint(self.model.sum(
-                        p.break1_indicator for p in periods_shift) == 1*sh.var)
+                        p.break1_indicator for p in periods_of_one_shift) == 1*sh.var)
                     self.model.add_constraint(self.model.sum(
-                        p.break2_indicator for p in periods_shift) == 0*sh.var)
+                        p.break2_indicator for p in periods_of_one_shift) == 0*sh.var)
                 if sh.hours == 10:
-
                     self.model.add_constraint(self.model.sum(
-                        p.break1_indicator for p in periods_shift) == 1*sh.var)
+                        p.break1_indicator for p in periods_of_one_shift) == 1*sh.var)
                     self.model.add_constraint(self.model.sum(
-                        p.break2_indicator for p in periods_shift) == 1*sh.var)
+                        p.break2_indicator for p in periods_of_one_shift) == 1*sh.var)
 
-                for period in periods_shift:
+                for period in periods_of_one_shift:
                     # period end > period start constraint
                     self.model.add_constraint(
                         period.period_end >= period.period_start)
@@ -369,44 +371,52 @@ class SetupConstraints(ModelObjects):
                         period.break1_indicator <= sh.var)
                     self.model.add_constraint(
                         period.break2_indicator <= sh.var)
-                    self.model.add_constraint(period.work_indicator + period.break1_indicator + period.break2_indicator
-                                              == sh.var)
+                    self.model.add_constraint(
+                        period.work_indicator + period.break1_indicator + period.break2_indicator
+                        == sh.var
+                    )
 
                     # Workhour and breakhour constraints
                     self.model.add_indicator(
-                        period.break1_indicator, period.period_start - sh.var*sh.start_hour >= 4*sh.var, 1)
+                        period.break1_indicator, period.period_start - sh.start_hour >= 4*sh.var, 1)
                     self.model.add_indicator(
-                        period.break1_indicator, period.period_start - sh.var*sh.start_hour <= 6*sh.var, 1)
+                        period.break1_indicator, period.period_start - sh.start_hour <= 6*sh.var, 1)
                     self.model.add_indicator(
-                        period.break2_indicator, period.period_start - sh.var*sh.start_hour >= 8*sh.var, 1)
+                        period.break2_indicator, period.period_start - sh.start_hour >= 8*sh.var, 1)
                     self.model.add_indicator(
                         period.break1_indicator, period.period_end - period.period_start == 0.5, 1)
                     self.model.add_indicator(
                         period.break2_indicator, period.period_end - period.period_start == 0.5, 1)
 
                 # Applying totalhours constraint
-                self.model.add_constraint(self.model.sum(
-                    p.period_end - p.period_start for p in periods_shift) == sh.hours*sh.var)
+                self.model.add_indicator(
+                    sh.var,
+                    self.model.sum(
+                        p.period_end - p.period_start for p in periods_of_one_shift)
+                    == sh.hours
+                )
 
                 # Applying non overlapping periods constraint
-                for i in range(len(periods_shift)-1):
+                for i in range(len(periods_of_one_shift)-1):
                     self.model.add_constraint(
-                        periods_shift[i].period_end == periods_shift[i+1].period_start)
+                        periods_of_one_shift[i].period_end == periods_of_one_shift[i+1].period_start)
 
                 # Constraint setting start and end time for periods
-                self.model.add_constraint(
-                    periods_shift[0].period_start == sh.start_hour*sh.var)
-                self.model.add_constraint(
-                    periods_shift[len(periods_shift)-1].period_end == sh.end_hour*sh.var)
+                self.model.add_indicator(
+                    sh.var,
+                    periods_of_one_shift[0].period_start == sh.start_hour)
+                self.model.add_indicator(
+                    sh.var,
+                    periods_of_one_shift[len(periods_of_one_shift)-1].period_end == sh.end_hour)
         return
 
     def vacancy_filling_constraint(self):
         self.model.total_slack_members = list()
+        self.model.debug_onfloor = {}
         self.model.on_floor_members_time = list()
         for vacancy in self.model.vacancy_objecttimes:
             minQuantity = self.model.get_vacancyid_details[vacancy.vacancyid][1]
             maxQuantity = self.model.get_vacancyid_details[vacancy.vacancyid][0]
-            print(minQuantity, maxQuantity)
             # print(minQuantity,maxQuantity)
             for h in np.arange(vacancy.start_hour, vacancy.end_hour, 0.25):
                 on_floor_sum = list()
@@ -418,11 +428,14 @@ class SetupConstraints(ModelObjects):
                     self.model.add_constraint(ind_var <= p.work_indicator)
                     self.model.add_indicator(ind_var, p.period_start <= h, 1)
                     self.model.add_indicator(ind_var, p.period_end >= h, 1)
-                    on_floor_sum.append(ind_var)
-
+                    on_floor = self.model.binary_var()
+                    self.model.add_constraint(
+                        on_floor == self.model.logical_and(ind_var, p.shift.var))
+                    on_floor_sum.append(on_floor)
+                    
+                
                 # Constraint to set minimum and maximum limit on on floor members
-                on_floor_var = self.model.sum(
-                    indicator for indicator in on_floor_sum)
+                on_floor_var = self.model.sum(on_floor_sum)
                 self.model.add_constraint(on_floor_var + slack_members >= minQuantity,
                                           "Minimum {0} members on floor at any time".format(minQuantity))
                 self.model.add_constraint(
@@ -486,6 +499,7 @@ class CreateResults(ModelObjects):
 
     def create_results(self):
         if self.solution:
+            print({k:[i.solution_value for i in self.model.debug_onfloor[k]] for k in self.model.debug_onfloor})
             self.model.report_kpis(solution=self.solution)
             self.create_hourly_profile()
             self.create_shifts()
@@ -510,7 +524,7 @@ class CreateResults(ModelObjects):
         for v in self.model.VAR:
             for sh in v.shift:
                 shift_assigned = sh.var.solution_value
-                if shift_assigned > 1e-8:
+                if int(shift_assigned) == 1:
                     shift_uid = str(uuid.uuid4()).upper()
                     periods_shift1 = [p for p in self.model.periods if p.contactid == v.contactid and
                                       p.shift is sh]
