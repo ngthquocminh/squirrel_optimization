@@ -5,6 +5,8 @@ Created on Tue Feb  8 13:18:22 2022
 @author: Bronwyn
 """
 
+# Modification: 
+# 1. 
 #
 
 from collections import namedtuple
@@ -25,7 +27,7 @@ from pandas import json_normalize
 
 
 class ModelObjects:
-    def __init__(self, data, model):
+    def __init__(self, data, model: Model):
         self.json_input = data
         self.model = model
 
@@ -172,14 +174,13 @@ class ModelObjects:
 
     def init_starttimes(self):
         "Initailizing starttimes for shifts"
-        start_times = [5,6,7,8,9,10,13,14,15,16]
+        start_times = [5, 6, 7, 8, 9, 10, 13, 14, 15, 16]
         self.model.df_shift_start = pd.DataFrame()
-        for i,st in enumerate(start_times):
+        for i, st in enumerate(start_times):
             arr = []
             for mins in range(60):
                 arr.append(st + st*mins)
             self.model.df_shift_start[i] = arr
-
 
     def convert_to_datetime(self, hour):
         "Convert hour(int) to datetime based on anchor date"
@@ -193,7 +194,7 @@ class ModelObjects:
 
 class SetupData(ModelObjects):
 
-    def __init__(self, data, model):
+    def __init__(self, data, model:Model):
         self.json_input = data
         self.model = model
         self.create_namedtuples()
@@ -230,8 +231,9 @@ class SetupData(ModelObjects):
                 pass
         return shifthours
 
-    def check_shift_in_range(self, sh_start, object_time_id):
+    def get_shift_in_range(self, sh_start, object_time_id):
         "Checks if start and end time exists between range of open and close times"
+        LST = []
         for vacancy in self.model.vacancy_objecttimes:
             if vacancy.objecttimeid == object_time_id:
                 starthour = vacancy.start_hour
@@ -240,15 +242,16 @@ class SetupData(ModelObjects):
                 for sl in self.shift_len_data:
                     if sl <= time_diff:
                         var = self.model.binary_var()
-                        return (
-                            "{0} hour shift".format(sl), 
-                            object_time_id, 
+                        LST.append((
+                            "{0} hour shift".format(sl),
+                            object_time_id,
                             sh_start,
-                            sh_start + sl, 
+                            sh_start + sl,
                             self.get_num_breaks(sl),
-                            sl, 
+                            sl,
                             var
-                        )
+                        ))
+        return LST
 
     def get_shift_length(self, start_time, end_time):
         "Create shift length possiblities based on different start times and end time"
@@ -264,19 +267,14 @@ class SetupData(ModelObjects):
 
     def create_shift(self, shifts):
         "creates shifts based on different starttimes and lengths based on availability"
-        self.SHIFTS = []
-        if len(shifts) > 0:
-            for shift in shifts:
-                start_time = shift[1]
-                end_time = shift[2]
-                objecttimeid = shift[3]
-                for shift_start in range(start_time, end_time):
-                    if self.model.df_shift_start.isin([shift_start]).sum().sum() > 0:
-                        _shift = self.check_shift_in_range(shift_start, objecttimeid)
-                        if _shift != None:
-                            self.SHIFTS.append(_shift)
-        shifts_obj = [self.model.TShift(*rs) for rs in self.SHIFTS]
-        return shifts_obj
+        SHIFTS = []
+        for shift in shifts:
+            __, start, end, id = shift
+            for shift_start in range(start, end):
+                if self.model.df_shift_start.isin([shift_start]).sum().sum() > 0:
+                    SHIFTS.extend(self.get_shift_in_range(shift_start, id))
+
+        return [self.model.TShift(*rs) for rs in SHIFTS]
 
     def get_shift_periods(self, shift_len):
         "get number of periods for each shift based on shift length"
@@ -291,6 +289,13 @@ class SetupData(ModelObjects):
                 avail.contactid, avail.start_hour, avail.end_hour)
             # print(avail_start,avail_end)
             shifts = self.create_shift(shift_list)
+            
+            self.model.add_constraint(self.model.sum(sh.var for sh in shifts) <= 1)
+            if avail.contactid == "6B0A4CE9-3229-432D-989A-25E5F8E7743D":
+                if len(shift_list) > 0:
+                    print(shift_list)
+                if len(shifts) > 0:
+                    print(shifts)
             temp = (avail.contactid, avail, shifts)
             self.model.VAR.append(self.model.TVar(*temp))
 
@@ -314,7 +319,7 @@ class SetupData(ModelObjects):
 
 class SetupConstraints(ModelObjects):
 
-    def __init__(self, data, model):
+    def __init__(self, data, model: Model):
         self.input_json = data
         self.model = model
         self.model.day_limit = 10
@@ -339,6 +344,7 @@ class SetupConstraints(ModelObjects):
                     self.model.add_constraint(self.model.sum(
                         p.break2_indicator for p in periods_shift) == 0*sh.var)
                 if sh.hours == 10:
+
                     self.model.add_constraint(self.model.sum(
                         p.break1_indicator for p in periods_shift) == 1*sh.var)
                     self.model.add_constraint(self.model.sum(
@@ -398,8 +404,9 @@ class SetupConstraints(ModelObjects):
         self.model.total_slack_members = list()
         self.model.on_floor_members_time = list()
         for vacancy in self.model.vacancy_objecttimes:
-            minQuantity = self.model.get_vacancyid_details[vacancy.vacancyid][0]
-            maxQuantity = self.model.get_vacancyid_details[vacancy.vacancyid][1]
+            minQuantity = self.model.get_vacancyid_details[vacancy.vacancyid][1]
+            maxQuantity = self.model.get_vacancyid_details[vacancy.vacancyid][0]
+            print(minQuantity, maxQuantity)
             # print(minQuantity,maxQuantity)
             for h in np.arange(vacancy.start_hour, vacancy.end_hour, 0.25):
                 on_floor_sum = list()
@@ -504,7 +511,7 @@ class CreateResults(ModelObjects):
             for sh in v.shift:
                 shift_assigned = sh.var.solution_value
                 if shift_assigned > 1e-8:
-                    shift_uid = str(uuid.uuid4())
+                    shift_uid = str(uuid.uuid4()).upper()
                     periods_shift1 = [p for p in self.model.periods if p.contactid == v.contactid and
                                       p.shift is sh]
                     for p in periods_shift1:
@@ -581,5 +588,5 @@ class ModelBuild:
 
 if __name__ == "__main__":
     "MAIN"
-    mb = ModelBuild("get_input_data_squirrel.json", Model())
+    mb = ModelBuild("get_input_data_squirrel.json", None)
     mb.create_model_run()
