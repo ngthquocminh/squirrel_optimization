@@ -6,10 +6,9 @@ import pandas as pd
 
 def foo1():
     "foo1"
-    df = pd.read_csv("Availabilities.csv")
+    df = pd.read_csv("Availabilities.csv",index_col=0)
     _df = df.groupby("ContactID")
     _df = _df.first()
-    del _df["Unnamed: 0"]
     del _df["TimeFrom"]
     del _df["TimeTo"]
     _df["Measurement"] = ["Certificate I In Health Support"] * _df.shape[0]
@@ -50,16 +49,24 @@ def foo4():
     print(df)
     t_formart = '%Y-%m-%dT%H:%M:%S'
     df = df.reset_index(drop=True)
+
     for i,row in df.iterrows():
         t1 = datetime.strptime(row['StartDateTime'], t_formart)
-        t1 = t1.replace(hour=random.choice([1,1,1,3,3,3,4,4,5,6]), minute=0, second=0)
+        t1 = t1.replace(hour=1, minute=0, second=0)
+        df.loc[i,'StartDateTime'] = t1
+    df = df.groupby(["StartDateTime","ContactID"]).first().reset_index()
+    print(df)
+    df['EndDateTime'] = [None]*df.shape[0]
+    df = df[["ContactID","TeamMember","StartDateTime","EndDateTime"]]
+    for i,row in df.iterrows():
+        t = row["StartDateTime"]
+        t1 = t.replace(hour=random.choice([1,1,1,3,3,3,4,4,5,6]), minute=0, second=0)
         df.loc[i,'StartDateTime'] = t1
         # print(t1)
-        t2 = datetime.strptime(row['EndDateTime'], t_formart)
-        t2 = t2.replace(hour=random.choice([15,16,17,18,19,20,20,20,20,21,22,22,22,23,23,23,23]), minute=0, second=0)
+        t2 = t.replace(hour=random.choice([15,16,17,18,19,20,20,20,20,21,22,22,22,23,23,23,23]), minute=0, second=0)
         df.loc[i,'EndDateTime'] = t2
-        # print(t2)
-
+        
+ 
     print(df)
     df.to_csv("Team_Member_Availability_xx.csv")
     
@@ -94,4 +101,4 @@ def foo6():
     
 if __name__ == "__main__":
     "main"
-    foo3()
+    foo6()
